@@ -1,0 +1,7 @@
+board:
+  name: hpm5361icb
+  full_name: HPMicro HPM5361 ICB
+  vendor: hpmicro
+  socs:
+    - name: hpm5361
+

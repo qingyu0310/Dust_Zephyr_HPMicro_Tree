@@ -1,0 +1,125 @@
+/*
+ * Copyright 2025 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/hpm5361-clocks.h>
+#include <hpmicro/hpm5361.dtsi>
+#include "hpm5361icb-pinctrl.dtsi"
+
+/ {
+	model = "HPMicro HPM5361 ICB";
+	compatible = "HPMicro,hpm5361icb";
+
+	chosen {
+		zephyr,sram = &dlm;
+		zephyr,flash = &flash0;
+		zephyr,itcm = &ilm;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,flash-controller = &xpi0;
+	};
+
+};
+
+&{/soc} {
+	pwm0: pwm@f0318000 {
+		compatible = "hpmicro,hpm-pwm";
+		reg = <0xf0318000 DT_SIZE_K(16)>;
+		clocks = <&clk CLOCK_MOT0 CLOCK_AHB 1>;
+		pinctrl-0 = <&pinmux_pwm0_p6>;
+		pinctrl-names = "default";
+		period-init = <800000>;
+		dead-zone-in-half-cycle = <0>;
+		status = "disabled";
+		#pwm-cells = <3>;
+	};
+};
+
+&uart0 {
+	status = "disabled";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart0>;
+	pinctrl-names = "default";
+	dmas = <&hdma 0 0x14>, <&hdma 1 0x15>;
+	dma-names = "rx", "tx";
+};
+
+&uart4 {
+	status = "disabled";
+	current-speed = <100000>;
+	pinctrl-0 = <&pinmux_uart4_rx>;
+	pinctrl-names = "default";
+	dmas = <&hdma 2 0x1C>, <&hdma 3 0x1D>;
+	dma-names = "rx", "tx";
+};
+
+&hdma {
+	status = "disabled";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpioa {
+	status = "okay";
+};
+
+&gpiob {
+	status = "disabled";
+};
+
+&mcan0 {
+	status = "disabled";
+	pinctrl-0 = <&pinmux_mcan0_txrx>;
+	pinctrl-names = "default";
+};
+
+&xpi0 {
+	status = "okay";
+
+	flash0: flash@80000000 {
+		compatible = "hpmicro,hpmicro-flash", "soc-nv-flash";
+		reg = <0x80000000 DT_SIZE_M(1)>;
+		status = "okay";
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+		nor-cfg-opt-hdr = <0xfcf90002>;
+		nor-cfg-opt-opt0 = <0x02>;
+		nor-cfg-opt-opt1 = <0x1000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			boot_partition: partition@0 {
+				label = "mcuboot";
+				reg = <0x0 DT_SIZE_K(64)>;
+			};
+
+			slot0_partition: partition@10000 {
+				label = "image-0";
+				reg = <0x10000 DT_SIZE_K(128)>;
+			};
+
+			slot1_partition: partition@30000 {
+				label = "image-1";
+				reg = <0x30000 DT_SIZE_K(128)>;
+			};
+
+			scratch_partition: partition@50000 {
+				label = "image-scratch";
+				reg = <0x50000 DT_SIZE_K(64)>;
+			};
+
+			storage_partition: partition@60000 {
+				label = "storage";
+				reg = <0x60000 DT_SIZE_K(640)>;
+			};
+		};
+	};
+};

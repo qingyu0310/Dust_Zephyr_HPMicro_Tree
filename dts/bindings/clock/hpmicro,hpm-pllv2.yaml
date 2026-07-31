@@ -1,0 +1,25 @@
+# Copyright (c) 2025 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro PLL v2
+
+compatible: "hpmicro,hpm-pllv2"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clock-frequency:
+    required: false
+    type: int
+    description: PLL output frequency
+
+  "#clock-cells":
+    const: 3
+
+clock-cells:
+  - name
+  - src
+  - div
