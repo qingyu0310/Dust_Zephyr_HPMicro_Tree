@@ -1,0 +1,206 @@
+diff --git a/boards/hpmicro/hpm6200evk/board.yml b/boards/hpmicro/hpm6200evk/board.yml
+index e8114bd..9c4aa10 100644
+--- a/boards/hpmicro/hpm6200evk/board.yml
++++ b/boards/hpmicro/hpm6200evk/board.yml
+@@ -1,5 +1,6 @@
+ board:
+   name: hpm6200evk
++  full_name: HPMicro HPM6200EVK
+   vendor: hpmicro
+   socs:
+     - name: hpm6280
+diff --git a/boards/hpmicro/hpm6750evk2/board.yml b/boards/hpmicro/hpm6750evk2/board.yml
+index d93e3f8..182247a 100644
+--- a/boards/hpmicro/hpm6750evk2/board.yml
++++ b/boards/hpmicro/hpm6750evk2/board.yml
+@@ -1,5 +1,6 @@
+ board:
+   name: hpm6750evk2
++  full_name: HPMicro HPM6750EVK2
+   vendor: hpmicro
+   socs:
+     - name: hpm6750
+diff --git a/boards/hpmicro/hpm6800evk/board.yml b/boards/hpmicro/hpm6800evk/board.yml
+index d1f4c98..a562f2e 100644
+--- a/boards/hpmicro/hpm6800evk/board.yml
++++ b/boards/hpmicro/hpm6800evk/board.yml
+@@ -1,5 +1,6 @@
+ board:
+   name: hpm6800evk
++  full_name: HPMicro HPM6800EVK
+   vendor: hpmicro
+   socs:
+     - name: hpm6880
+diff --git a/boards/hpmicro/hpm6e00evk/board.cmake b/boards/hpmicro/hpm6e00evk/board.cmake
+index 2c2562a..20a01ad 100644
+--- a/boards/hpmicro/hpm6e00evk/board.cmake
++++ b/boards/hpmicro/hpm6e00evk/board.cmake
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+-set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../sdk_env/hpm_sdk/boards/openocd)
+-set(HPM_TOOLS_RELATIVE ${ZEPHYR_BASE}/../sdk_env/tools)
++set(OPENOCD_CONFIG_RELATIVE ${ZEPHYR_BASE}/../Zephyr_HPMicro/sdk_env/hpm_sdk/boards/openocd)
++set(HPM_TOOLS_RELATIVE ${ZEPHYR_BASE}/../Zephyr_HPMicro/sdk_env/tools)
+ get_filename_component(OPENOCD_CONFIG_ABSOLUTE ${OPENOCD_CONFIG_RELATIVE} ABSOLUTE)
+ get_filename_component(HPM_TOOLS_ABSOLUTE ${HPM_TOOLS_RELATIVE} ABSOLUTE)
+ set(OPENOCD_CONFIG_DIR ${OPENOCD_CONFIG_ABSOLUTE} CACHE PATH "hpmicro openocd cfg root directory")
+@@ -12,10 +12,11 @@ if(NOT CONFIG_XIP)
+ endif()
+ 
+ if(${BOARD} STREQUAL "hpm6e00evk")
+-    board_runner_args(openocd "--config=${OPENOCD_CONFIG_DIR}/probes/ft2232.cfg"
++    board_runner_args(openocd "--config=${OPENOCD_CONFIG_DIR}/probes/cmsis_dap.cfg"
+                                     "--config=${OPENOCD_CONFIG_DIR}/soc/hpm6e80-single-core.cfg"
+                                 "--config=${OPENOCD_CONFIG_DIR}/boards/hpm6e00evk.cfg"
+-                                "--openocd-search=${OPENOCD_CONFIG_DIR}")
++                                "--openocd-search=${OPENOCD_CONFIG_DIR}"
++                                "--cmd-pre-init=adapter speed 100")
+     board_runner_args(openocd --target-handle=_CHIPNAME.cpu0)
+ else()
+     message(FATAL_ERROR "${BOARD} is not supported now")
+@@ -28,7 +29,7 @@ if("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Linux")
+     string(REPLACE ${SEPARATOR} ";" ZPATH ${ENV_PATH})
+     find_program(OPENOCD openocd PATHS ${ZPATH} NO_DEFAULT_PATH)
+ elseif("${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
+-    set(OPENOCD "${HPM_TOOLS_DIR}/openocd/openocd.exe" CACHE FILEPATH "" FORCE)
++    set(OPENOCD "${HPM_TOOLS_DIR}/openocd_backup/openocd.exe" CACHE FILEPATH "" FORCE)
+     set(OPENOCD_DEFAULT_PATH ${HPM_TOOLS_DIR}/openocd/tcl)
+ else()
+     message(WARNING "${CMAKE_HOST_SYSTEM_NAME} openocd is not support")
+diff --git a/boards/hpmicro/hpm6e00evk/board.yml b/boards/hpmicro/hpm6e00evk/board.yml
+index f1e42bd..124c7a6 100644
+--- a/boards/hpmicro/hpm6e00evk/board.yml
++++ b/boards/hpmicro/hpm6e00evk/board.yml
+@@ -1,5 +1,6 @@
+ board:
+   name: hpm6e00evk
++  full_name: HPMicro HPM6E00EVK
+   vendor: hpmicro
+   socs:
+     - name: hpm6e80
+diff --git a/soc/hpmicro/CMakeLists.txt b/soc/hpmicro/CMakeLists.txt
+index 4704b08..44464d9 100644
+--- a/soc/hpmicro/CMakeLists.txt
++++ b/soc/hpmicro/CMakeLists.txt
+@@ -2,7 +2,12 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ add_subdirectory(common)
+-add_subdirectory(${SOC_SERIES})
++if(SOC_SERIES STREQUAL "HPM5300")
++	# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
++	add_subdirectory(${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300 ${CMAKE_CURRENT_BINARY_DIR}/HPM5300)
++else()
++	add_subdirectory(${SOC_SERIES})
++endif()
+ 
+ zephyr_linker_sources_ifdef(CONFIG_HPM_BOOT_HEADER ROM_START SORT_KEY $ common/boot_header.ld)
+ zephyr_linker_sources_ifdef(CONFIG_HPM_BOOT_HEADER ROM_START SORT_KEY + common/app_load_offset.ld)
+diff --git a/soc/hpmicro/HPM6200/Kconfig.defconfig.series b/soc/hpmicro/HPM6200/Kconfig.defconfig.series
+index 714fb44..241ac4e 100644
+--- a/soc/hpmicro/HPM6200/Kconfig.defconfig.series
++++ b/soc/hpmicro/HPM6200/Kconfig.defconfig.series
+@@ -25,8 +25,6 @@ config DCACHE
+ config RISCV_SOC_INTERRUPT_INIT
+ 	default y
+ 
+-config RISCV_GP
+-	default y
+ 
+ config 2ND_LVL_ISR_TBL_OFFSET
+ 	default 12
+diff --git a/soc/hpmicro/HPM6700/Kconfig.defconfig.series b/soc/hpmicro/HPM6700/Kconfig.defconfig.series
+index a8156ed..8a2c07c 100644
+--- a/soc/hpmicro/HPM6700/Kconfig.defconfig.series
++++ b/soc/hpmicro/HPM6700/Kconfig.defconfig.series
+@@ -25,8 +25,6 @@ config DCACHE
+ config RISCV_SOC_INTERRUPT_INIT
+ 	default y
+ 
+-config RISCV_GP
+-	default y
+ 
+ config 2ND_LVL_ISR_TBL_OFFSET
+ 	default 12
+diff --git a/soc/hpmicro/HPM6800/Kconfig.defconfig.series b/soc/hpmicro/HPM6800/Kconfig.defconfig.series
+index a4b8fe3..5b677fa 100644
+--- a/soc/hpmicro/HPM6800/Kconfig.defconfig.series
++++ b/soc/hpmicro/HPM6800/Kconfig.defconfig.series
+@@ -25,8 +25,6 @@ config DCACHE
+ config RISCV_SOC_INTERRUPT_INIT
+ 	default y
+ 
+-config RISCV_GP
+-	default y
+ 
+ config 2ND_LVL_ISR_TBL_OFFSET
+ 	default 12
+diff --git a/soc/hpmicro/HPM6E00/Kconfig.defconfig.series b/soc/hpmicro/HPM6E00/Kconfig.defconfig.series
+index d2724b6..0d914b0 100644
+--- a/soc/hpmicro/HPM6E00/Kconfig.defconfig.series
++++ b/soc/hpmicro/HPM6E00/Kconfig.defconfig.series
+@@ -25,8 +25,8 @@ config DCACHE
+ config RISCV_SOC_INTERRUPT_INIT
+ 	default y
+ 
+-config RISCV_GP
+-	default y
++# RISCV_GP is a choice symbol; defaults have no effect on choices.
++# The setting is managed via arch/riscv/Kconfig choice block.
+ 
+ config 2ND_LVL_ISR_TBL_OFFSET
+ 	default 12
+diff --git a/soc/hpmicro/HPM6E00/soc.c b/soc/hpmicro/HPM6E00/soc.c
+index 554bbca..7299ed7 100644
+--- a/soc/hpmicro/HPM6E00/soc.c
++++ b/soc/hpmicro/HPM6E00/soc.c
+@@ -100,6 +100,8 @@ static void soc_init_clock(void)
+     /* Configure mchtmr to 24MHz */
+     clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
+     clock_set_source_divider(clock_mchtmr1, clk_src_osc24m, 1);
++
++    clock_update_core_clock();
+ }
+ 
+ #ifdef CONFIG_NOCACHE_MEMORY
+diff --git a/soc/hpmicro/Kconfig b/soc/hpmicro/Kconfig
+index 37a4dd5..3c8d052 100644
+--- a/soc/hpmicro/Kconfig
++++ b/soc/hpmicro/Kconfig
+@@ -9,6 +9,8 @@ config SOC_FAMILY_HPM
+ if SOC_FAMILY_HPM
+ 
+ rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig"
++# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300/Kconfig"
+ 
+ config USE_DT_CODE_PARTITION
+ 	default y if BOOTLOADER_MCUBOOT
+diff --git a/soc/hpmicro/Kconfig.defconfig b/soc/hpmicro/Kconfig.defconfig
+index 5fd59fa..097f046 100644
+--- a/soc/hpmicro/Kconfig.defconfig
++++ b/soc/hpmicro/Kconfig.defconfig
+@@ -8,6 +8,8 @@
+ if SOC_FAMILY_HPM
+ 
+ rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig.defconfig.series"
++# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300/Kconfig.defconfig.series"
+ 
+ config SERIAL_INIT_PRIORITY
+     default KERNEL_INIT_PRIORITY_DEVICE
+diff --git a/soc/hpmicro/Kconfig.soc b/soc/hpmicro/Kconfig.soc
+index 0ac112d..f7f2e1c 100644
+--- a/soc/hpmicro/Kconfig.soc
++++ b/soc/hpmicro/Kconfig.soc
+@@ -7,4 +7,6 @@ config SOC_FAMILY_HPM
+ config SOC_FAMILY
+     default "hpmicro" if SOC_FAMILY_HPM
+ 
+-source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig.soc"
+\ No newline at end of file
++source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig.soc"
++# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
++source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300/Kconfig.soc"
+\ No newline at end of file

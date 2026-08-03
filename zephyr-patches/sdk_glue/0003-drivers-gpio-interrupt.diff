@@ -1,0 +1,105 @@
+diff --git a/drivers/gpio/gpio_hpmicro.c b/drivers/gpio/gpio_hpmicro.c
+index 4903555..bf98c3b 100644
+--- a/drivers/gpio/gpio_hpmicro.c
++++ b/drivers/gpio/gpio_hpmicro.c
+@@ -8,6 +8,7 @@
+ #define DT_DRV_COMPAT hpmicro_hpm_gpio
+ 
+ #include <errno.h>
++#include <stdint.h>
+ #include <zephyr/device.h>
+ #include <zephyr/irq.h>
+ #include <zephyr/drivers/gpio.h>
+@@ -23,6 +24,7 @@ struct gpio_hpm_config {
+ 	GPIO_Type *gpio_base;
+ 	uint32_t  port_base;
+ 	uint32_t  port_num;
++	uint32_t  irq_num;
+ #ifdef CONFIG_PINCTRL
+ 	const struct pinctrl_dev_config *pincfg;
+ #endif /* CONFIG_PINCTRL */
+@@ -34,6 +36,16 @@ struct gpio_hpm_data {
+ 	sys_slist_t callbacks;
+ };
+ 
++static void gpio_hpm_disable_port_interrupts(GPIO_Type *gpio_base, uint32_t port_base)
++{
++	gpio_base->IE[port_base].CLEAR = UINT32_MAX;
++	gpio_base->AS[port_base].CLEAR = UINT32_MAX;
++#ifdef GPIO_PD_VALUE_IRQ_DUAL_MASK
++	gpio_base->PD[port_base].CLEAR = UINT32_MAX;
++#endif
++	gpio_base->IF[port_base].VALUE = UINT32_MAX;
++}
++
+ static int gpio_hpm_configure(const struct device *dev,
+ 				   gpio_pin_t pin, gpio_flags_t flags)
+ {
+@@ -190,11 +202,18 @@ static int gpio_hpm_pin_interrupt_configure(const struct device *dev,
+ 
+ 	if (mode == GPIO_INT_MODE_DISABLED) {
+ 		gpio_disable_pin_interrupt(gpio_base, port_base, pin);
++		gpio_clear_pin_interrupt_flag(gpio_base, port_base, pin);
++		if (gpio_base->IE[port_base].VALUE == 0U) {
++			irq_disable(config->irq_num);
++		}
+ 	} else {
++		gpio_clear_pin_interrupt_flag(gpio_base, port_base, pin);
+ 		gpio_config_pin_interrupt(gpio_base, port_base,
+ 						   pin, trigger);
++		gpio_clear_pin_interrupt_flag(gpio_base, port_base, pin);
+ 		gpio_enable_pin_interrupt(gpio_base, port_base,
+ 							pin);
++		irq_enable(config->irq_num);
+ 		// intc_m_enable_irq_with_priority(IRQn_GPIO0_Z, 1);
+ 	}
+ 	return 0;
+@@ -214,13 +233,15 @@ __attribute__((section(".isr")))static void gpio_hpm_port_isr(const struct devic
+ 	struct gpio_hpm_data *data = dev->data;
+ 	GPIO_Type *gpio_base = config->gpio_base;
+ 	uint32_t port_base = config->port_base;
+-	uint32_t int_status;
+-	int_status = gpio_base->IF[port_base].VALUE;
++	uint32_t raw_status = gpio_base->IF[port_base].VALUE;
++	uint32_t int_status = raw_status & gpio_base->IE[port_base].VALUE;
+ 
+ 	/* Clear the port interrupts */
+-	gpio_base->IF[port_base].VALUE = int_status;
++	gpio_base->IF[port_base].VALUE = raw_status;
+ 
+-	gpio_fire_callbacks(&data->callbacks, dev, int_status);
++	if (int_status != 0U) {
++		gpio_fire_callbacks(&data->callbacks, dev, int_status);
++	}
+ }
+ 
+ 
+@@ -237,12 +258,18 @@ static const struct gpio_driver_api gpio_hpm_driver_api = {
+ 
+ #define GPIO_HPMICRO_IRQ_INIT(n)						\
+ 	do {								\
++		const struct gpio_hpm_config *cfg = DEVICE_DT_INST_GET(n)->config; \
++		GPIO_Type *gpio = cfg->gpio_base;			\
++		uint32_t port = cfg->port_base;				\
++									\
++		irq_disable(DT_INST_IRQN(n));				\
++		gpio_hpm_disable_port_interrupts(gpio, port);		\
++									\
+ 		IRQ_CONNECT(DT_INST_IRQN(n),				\
+ 				DT_INST_IRQ(n, priority),			\
+ 				gpio_hpm_port_isr,				\
+ 				DEVICE_DT_INST_GET(n), 0);			\
+-									\
+-		irq_enable(DT_INST_IRQN(n));				\
++		irq_disable(DT_INST_IRQN(n));				\
+ 	} while (0)
+ 
+ #define GPIO_PORT_BASE_ADDR(n) DT_INST_PROP(n, hpmicro_gpio_port)
+@@ -266,6 +293,7 @@ static const struct gpio_driver_api gpio_hpm_driver_api = {
+ 		.gpio_base = (GPIO_Type *)DT_INST_REG_ADDR(n),		\
+ 		.port_base = GPIO_PORT_BASE_ADDR(n),	\
+ 		.port_num = GPIO_PORT_NUM(n),	\
++		.irq_num = DT_INST_IRQN(n),	\
+ 		PINCTRL_INIT(n)		\
+ 	};								\
+ 									\

@@ -1,0 +1,725 @@
+diff --git a/drivers/clock_control/CMakeLists.txt b/drivers/clock_control/CMakeLists.txt
+index 7cad9c3..0fff62f 100644
+--- a/drivers/clock_control/CMakeLists.txt
++++ b/drivers/clock_control/CMakeLists.txt
+@@ -3,5 +3,5 @@
+ 
+ zephyr_library_amend()
+ zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_HPMICRO clock_control_hpmicro.c)
+-zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_HPMICRO_PLLv1 clock_control_hpmicro_pll.c)
+-zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_HPMICRO_PLLv2 clock_control_hpmicro_pllv2.c)
+\ No newline at end of file
++zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_HPMICRO_PLLV1 clock_control_hpmicro_pll.c)
++zephyr_library_sources_ifdef(CONFIG_CLOCK_CONTROL_HPMICRO_PLLV2 clock_control_hpmicro_pllv2.c)
+\ No newline at end of file
+diff --git a/drivers/clock_control/clock_control_hpmicro_pllv2.c b/drivers/clock_control/clock_control_hpmicro_pllv2.c
+index dcaf698..7cdaab7 100644
+--- a/drivers/clock_control/clock_control_hpmicro_pllv2.c
++++ b/drivers/clock_control/clock_control_hpmicro_pllv2.c
+@@ -58,7 +58,7 @@ static int clock_control_hpm_pll_get_rate(const struct device *dev,
+ 	const struct clock_pllv2_cfg *cfg = dev->config;
+ 	uint32_t index = *(uint32_t *)sys;
+ 
+-	*rate = pllctlv2_get_pll_freq_in_hz(cfg->base, index);
++	*rate = pllctlv2_get_pll_freq_in_hz(cfg->pll_base, index);
+ 	return 0;
+ }
+ 
+@@ -67,14 +67,14 @@ static int hpm_clock_pllv2_init(const struct device *dev)
+ 	const struct clock_pllv2_cfg *cfg = dev->config;
+ 	uint32_t status;
+ 
+-	sysctl_clock_set_preset(cfg->sysctl, sysctl_preset_0);
+-	status = pllctlv2_init_pll_with_freq(cfg->base, cfg->index, cfg->freq);
++	sysctl_clock_set_preset(cfg->sysctl_base, sysctl_preset_0);
++	status = pllctlv2_init_pll_with_freq(cfg->pll_base, cfg->index, cfg->freq);
+ 
+ 	if (status_success != status)
+ 		return -ENOTSUP;
+ 
+ 	for (int i = 0; i < cfg->num_div; i++) {
+-		pllctlv2_set_postdiv(cfg->base, cfg->index, cfg->div[i]->index, cfg->div[i]->prescale);		
++		pllctlv2_set_postdiv(cfg->pll_base, cfg->index, cfg->div[i]->index, cfg->div[i]->prescale);
+ 	}
+ 	return 0;
+ }
+@@ -105,8 +105,8 @@ static struct clock_control_driver_api clock_control_hpm_pllv2_api = {
+ 		DT_INST_FOREACH_CHILD(n, PLL_DIVISION_CONFIG);	\
+ 														\
+ 		static struct clock_pllv2_cfg clock_pllv2_cfg_##n = {	\
+-			.base = (PLLCTL_Type *)DT_REG_ADDR_BY_NAME(CLOCK_CONTROLLER, pll),	\
+-			.sysctl = (SYSCTL_Type *)DT_REG_ADDR_BY_NAME(CLOCK_CONTROLLER, sysctl),	\
++			.pll_base = (PLLCTLV2_Type *)DT_REG_ADDR_BY_NAME(CLOCK_CONTROLLER, pllv2),	\
++			.sysctl_base = (SYSCTL_Type *)DT_REG_ADDR_BY_NAME(CLOCK_CONTROLLER, sysctl),	\
+ 			.freq = DT_INST_PROP(n, pll_frequency),	\
+ 			.index = DT_INST_PROP(n, pll_index),	\
+ 			.num_div = DT_INST_CHILD_NUM(n),	\
+diff --git a/drivers/flash/flash_hpmicro.c b/drivers/flash/flash_hpmicro.c
+index a4ac1e7..8bd92f3 100644
+--- a/drivers/flash/flash_hpmicro.c
++++ b/drivers/flash/flash_hpmicro.c
+@@ -18,6 +18,9 @@
+ #include <string.h>
+ #include <errno.h>
+ #include "hpm_romapi.h"
++#ifdef ARRAY_SIZE
++#undef ARRAY_SIZE
++#endif
+ #include <zephyr/kernel.h>
+ #include <zephyr/device.h>
+ #include <stddef.h>
+diff --git a/drivers/pwm/Kconfig.hpmicro b/drivers/pwm/Kconfig.hpmicro
+index 74282b2..29a123c 100644
+--- a/drivers/pwm/Kconfig.hpmicro
++++ b/drivers/pwm/Kconfig.hpmicro
+@@ -7,6 +7,7 @@ config PWM_HPMICRO
+ 	bool "HPMicro PWM driver"
+ 	default y
+ 	depends on DT_HAS_HPMICRO_HPM_PWM_ENABLED || DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
++	select PWM
+ 	select HAS_HPMSDK_PWM if DT_HAS_HPMICRO_HPM_PWM_ENABLED
+ 	select HAS_HPMSDK_PWMV2 if DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ 	help
+diff --git a/drivers/pwm/pwm_hpmicro.c b/drivers/pwm/pwm_hpmicro.c
+index 587f0a2..9380bf5 100755
+--- a/drivers/pwm/pwm_hpmicro.c
++++ b/drivers/pwm/pwm_hpmicro.c
+@@ -16,386 +16,311 @@
+ 
+ LOG_MODULE_REGISTER(pwm_hpmicro, CONFIG_PWM_LOG_LEVEL);
+ 
+-/* Support both PWM and PWMv2 */
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED && CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ #error "Cannot enable both PWM and PWMv2 in the same build"
+ #elif CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+ #include <hpm_pwm_drv.h>
+ #define DT_DRV_COMPAT hpmicro_hpm_pwm
+ #define HPM_PWM_BASE_TYPE PWM_Type
+-#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED  
++#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ #include <hpm_pwmv2_drv.h>
+ #define DT_DRV_COMPAT hpmicro_hpm_pwmv2
+-#define HPM_PWM_BASE_TYPE PWMV2_Type  /* PWMv2 may use different type, adjust as needed */
++#define HPM_PWM_BASE_TYPE PWMV2_Type
+ #else
+ #error "No PWM peripheral enabled"
+ #endif
+ 
+ struct pwm_hpmicro_config {
+-	HPM_PWM_BASE_TYPE *base;
+-	uint32_t clock_name;
+-	uint32_t period;
+-	uint32_t dead_zone_in_half_cycle;
+-	const struct pinctrl_dev_config *pincfg;
++    HPM_PWM_BASE_TYPE *base;
++    uint32_t clock_name;
++    uint32_t period;
++    uint32_t dead_zone_in_half_cycle;
++    const struct pinctrl_dev_config *pincfg;
+ };
+ 
+ struct pwm_hpmicro_data {
+-	uint32_t period_cycles[1];
++    uint32_t period_cycles[1];
++    uint32_t configured_channels;
+ };
+ 
+-/* PWM version specific implementations */
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
++static inline void set_cmp_shadow_sel(HPM_PWM_BASE_TYPE *pwm, uint8_t ch)
++{
++    pwm->GCR = (pwm->GCR & ~PWM_GCR_CMPSHDWSEL_MASK)
++         | PWM_GCR_CMPSHDWSEL_SET(ch);
++}
++
+ static int hpmicro_pwm_v1_set_cycles(const struct device *dev, uint32_t channel,
+-		       uint32_t period_cycles, uint32_t pulse_cycles,
+-		       pwm_flags_t flags)
++                       uint32_t period_cycles, uint32_t pulse_cycles,
++                       pwm_flags_t flags)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	pwm_config_t pwm_config;
+-	pwm_cmp_config_t cmp_config[2] = {0};
+-	HPM_PWM_BASE_TYPE *pwm_base = config->base;
+-	uint32_t rld = 0, xrld = 0, prld = 0;
+-	uint32_t rld_cmp = 0, xrld_cmp = 0;
+-	uint16_t i, j;
+-
+-	pwm_get_default_pwm_config(pwm_base, &pwm_config);
+-	if (flags == PWM_POLARITY_INVERTED) {
+-		pwm_config.invert_output = true;
+-	} else if (flags == PWM_POLARITY_NORMAL) {
+-		pwm_config.invert_output = false;
+-	} else if (flags == PWM_TRIG_ENABLE) {
+-		cmp_config[0].enable_ex_cmp  = false;
+-		cmp_config[0].mode = pwm_cmp_mode_output_compare;
+-		cmp_config[0].cmp = period_cycles + 1;
+-		cmp_config[0].update_trigger = pwm_shadow_register_update_on_hw_event;
+-
+-		cmp_config[1].mode = pwm_cmp_mode_output_compare;
+-		cmp_config[1].cmp = period_cycles;
+-		cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
+-		pwm_config_cmp(pwm_base, channel, &cmp_config[0]);
+-		pwm_load_cmp_shadow_on_capture(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, 0);
+-		pwm_config_cmp(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, &cmp_config[1]);
+-	
+-		pwm_start_counter(pwm_base);
+-		pwm_issue_shadow_register_lock_event(pwm_base);
+-		return 0;
+-	} else {
+-		return -ENOTSUP;
+-	}
+-
+-	if (period_cycles >  0xffffff) {
+-		for (i = 1; i <= 16; i++) {
+-			if ((period_cycles / (i + 1)) <= 0xffffff) {
+-				rld = period_cycles / (i + 1);
+-				xrld = i;
+-				prld = (xrld << 24) | rld;
+-				for (j = 0; j <= 16; j++) {
+-					if (((period_cycles - pulse_cycles) / (j + 1)) <= 0xffffff) {
+-						rld_cmp = (period_cycles - pulse_cycles) / (j + 1);
+-						xrld_cmp = j;
+-						break;
+-					} else if (j >= 16) {
+-						return -ENOTSUP;
+-					}
+-				}
+-				break;
+-			} else if (i >= 16) {
+-				return -ENOTSUP;
+-			}
+-		}
+-	} else {
+-		rld = period_cycles;
+-		xrld = 0;
+-		prld = period_cycles;
+-		rld_cmp = period_cycles - pulse_cycles;
+-		xrld_cmp = 0;
+-	}
+-
+-	if (prld != ((PWM_RLD_XRLD_GET(pwm_base->RLD) << 24) | PWM_RLD_RLD_GET(pwm_base->RLD))) {
+-
+-		pwm_config.enable_output = true;
+-		pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
+-		pwm_set_reload(pwm_base, xrld, rld);
+-		pwm_set_start_count(pwm_base, 0, 0);
+-
+-		cmp_config[0].enable_ex_cmp  = true;
+-		cmp_config[0].mode = pwm_cmp_mode_output_compare;
+-		cmp_config[0].cmp = rld + 1;
+-		cmp_config[0].ex_cmp = xrld;
+-		cmp_config[0].update_trigger = pwm_shadow_register_update_on_modify;
+-
+-		cmp_config[1].enable_ex_cmp  = true;
+-		cmp_config[1].mode = pwm_cmp_mode_output_compare;
+-		cmp_config[1].cmp = rld;
+-		cmp_config[1].ex_cmp = xrld;
+-		cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
+-
+-		if (status_success != pwm_setup_waveform(pwm_base, channel, &pwm_config, channel, &cmp_config[0], 1)) {
+-			LOG_ERR("failed to setup waveform\n");
+-			return -ENOTSUP;
+-		}
+-		pwm_load_cmp_shadow_on_capture(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, 0);
+-		pwm_config_cmp(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, &cmp_config[1]);
+-	
+-		pwm_start_counter(pwm_base);
+-		pwm_issue_shadow_register_lock_event(pwm_base);
+-	}
+-
+-	pwm_shadow_register_unlock(pwm_base);
+-    pwm_cmp_update_cmp_value(pwm_base, channel, rld_cmp, xrld_cmp);
+-	pwm_issue_shadow_register_lock_event(pwm_base);
+-	return 0;
++    const struct pwm_hpmicro_config *config = dev->config;
++    struct pwm_hpmicro_data *data = dev->data;
++    pwm_config_t pwm_config;
++    pwm_cmp_config_t cmp_config[2] = {0};
++    HPM_PWM_BASE_TYPE *pwm_base = config->base;
++    uint32_t rld = 0, xrld = 0, prld = 0;
++    uint32_t rld_cmp = 0, xrld_cmp = 0;
++    uint16_t i, j;
++    uint8_t cmp_idx = channel;
++
++    pwm_get_default_pwm_config(pwm_base, &pwm_config);
++    if (flags == PWM_POLARITY_INVERTED) {
++        pwm_config.invert_output = true;
++    } else if (flags == PWM_POLARITY_NORMAL) {
++        pwm_config.invert_output = false;
++    } else if (flags == PWM_TRIG_ENABLE) {
++        cmp_config[0].enable_ex_cmp  = false;
++        cmp_config[0].mode = pwm_cmp_mode_output_compare;
++        cmp_config[0].cmp = period_cycles + 1;
++        cmp_config[0].update_trigger = pwm_shadow_register_update_on_hw_event;
++        cmp_config[1].mode = pwm_cmp_mode_output_compare;
++        cmp_config[1].cmp = period_cycles;
++        cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
++        pwm_config_cmp(pwm_base, channel, &cmp_config[0]);
++        set_cmp_shadow_sel(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1);
++        pwm_config_cmp(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, &cmp_config[1]);
++        pwm_start_counter(pwm_base);
++        pwm_issue_shadow_register_lock_event(pwm_base);
++        return 0;
++    } else {
++        return -ENOTSUP;
++    }
++
++    if (period_cycles >  0xffffff) {
++        for (i = 1; i <= 16; i++) {
++            if ((period_cycles / (i + 1)) <= 0xffffff) {
++                rld = period_cycles / (i + 1);
++                xrld = i;
++                prld = (xrld << 24) | rld;
++                for (j = 0; j <= 16; j++) {
++                    if (((period_cycles - pulse_cycles) / (j + 1)) <= 0xffffff) {
++                        rld_cmp = (period_cycles - pulse_cycles) / (j + 1);
++                        xrld_cmp = j;
++                        break;
++                    } else if (j >= 16) {
++                        return -ENOTSUP;
++                    }
++                }
++                break;
++            } else if (i >= 16) {
++                return -ENOTSUP;
++            }
++        }
++    } else {
++        rld = period_cycles;
++        xrld = 0;
++        prld = period_cycles;
++        rld_cmp = period_cycles - pulse_cycles;
++        xrld_cmp = 0;
++    }
++
++    if (pulse_cycles == 0) {
++        rld_cmp = rld + 1;
++    }
++
++    if (((data->configured_channels & (1UL << channel)) == 0U)) {
++
++        pwm_config.enable_output = true;
++
++        cmp_config[0].enable_ex_cmp  = true;
++        cmp_config[0].mode = pwm_cmp_mode_output_compare;
++        cmp_config[0].cmp = rld + 1;
++        cmp_config[0].ex_cmp = xrld;
++        cmp_config[0].update_trigger = pwm_shadow_register_update_on_modify;
++        cmp_config[1].enable_ex_cmp  = true;
++        cmp_config[1].mode = pwm_cmp_mode_output_compare;
++        cmp_config[1].cmp = rld;
++        cmp_config[1].ex_cmp = xrld;
++        cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
++
++        if (status_success != pwm_setup_waveform(pwm_base, channel, &pwm_config, cmp_idx, &cmp_config[0], 1)) {
++            LOG_ERR("failed to setup waveform\n");
++            return -ENOTSUP;
++        }
++        set_cmp_shadow_sel(pwm_base, cmp_idx);
++        pwm_config_cmp(pwm_base, cmp_idx, &cmp_config[1]);
++        pwm_issue_shadow_register_lock_event(pwm_base);
++        data->configured_channels |= (1UL << channel);
++
++
++    } else if (prld != ((PWM_RLD_XRLD_GET(pwm_base->RLD) << 24) | PWM_RLD_RLD_GET(pwm_base->RLD))) {
++        pwm_set_reload(pwm_base, xrld, rld);
++    }
++
++    pwm_shadow_register_unlock(pwm_base);
++    pwm_cmp_update_cmp_value(pwm_base, cmp_idx, rld_cmp, xrld_cmp);
++    set_cmp_shadow_sel(pwm_base, cmp_idx);
++    pwm_issue_shadow_register_lock_event(pwm_base);
++
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED */
++#endif
+ 
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ static int hpmicro_pwm_v2_set_cycles(const struct device *dev, uint32_t channel,
+-		       uint32_t period_cycles, uint32_t pulse_cycles,
+-		       pwm_flags_t flags)
++                       uint32_t period_cycles, uint32_t pulse_cycles,
++                       pwm_flags_t flags)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	HPM_PWM_BASE_TYPE *pwm_base = config->base;
+-	uint32_t rld, xrld, prld, rld_cmp, xrld_cmp;
+-	uint16_t i, j;
+-	
+-	if (channel > 7) {
+-		return -ENOTSUP;
+-	}
+-	/* Calculate counter and cmp index based on channel
+-	 * Channel 0,1 -> Counter 0, CMP 0-3
+-	 * Channel 2,3 -> Counter 1, CMP 4-7
+-	 * Channel 4,5 -> Counter 2, CMP 8-11
+-	 * Channel 6,7 -> Counter 3, CMP 12-15
+-	 */
+-	pwm_counter_t counter = (pwm_counter_t)(channel >> 1);
+-	uint8_t cmp_start_index = (channel >> 1) << 2;  /* counter * 4 */
+-	uint8_t cmp_index1 = cmp_start_index + ((channel & 0x01) << 1);     /* +0/+2 for even/odd */
+-	uint8_t cmp_index2 = cmp_index1 + 1;                                /* +1/+3 for even/odd */
+-	
+-	/* Shadow register allocation for PWMv2:
+-	 * Each counter uses 5 shadow registers:
+-	 * - Counter 0: shadows 0(reload), 1,2(ch0), 3,4(ch1)
+-	 * - Counter 1: shadows 5(reload), 6,7(ch2), 8,9(ch3)  
+-	 * - Counter 2: shadows 10(reload), 11,12(ch4), 13,14(ch5)
+-	 * - Counter 3: shadows 15(reload), 16,17(ch6), 18,19(ch7)
+-	 */
+-	uint8_t shadow_reload = counter * 5;                                 /* 0, 5, 10, 15 */
+-	uint8_t shadow_cmp1 = shadow_reload + 1 + ((channel & 0x01) << 1);  /* ch0:1, ch1:3 */
+-	uint8_t shadow_cmp2 = shadow_cmp1 + 1;                              /* ch0:2, ch1:4 */
+-
+-	/* Handle polarity inversion */
+-	bool invert_output = false;
+-	if (flags == PWM_POLARITY_INVERTED) {
+-		invert_output = true;
+-	} else if (flags == PWM_POLARITY_NORMAL) {
+-		invert_output = false;
+-	} else {
+-		return -ENOTSUP;
+-	}
+-
+-	/* pwmv2 only support period <= 0xffffff */
+-	if (period_cycles > 0xffffff) {
+-		return -ENOTSUP;
+-	} else {
+-		rld = period_cycles;
+-		xrld = 0;
+-		prld = period_cycles;
+-		rld_cmp = period_cycles - pulse_cycles;
+-		xrld_cmp = 0;
+-	}
+-
+-	/* Unlock shadow registers */
+-	pwmv2_shadow_register_unlock(pwm_base);
+-
+-	/* Set reload value with extended precision */
+-	pwmv2_set_shadow_val(pwm_base, shadow_reload, rld, xrld, false);
+-	
+-	/* Set compare values for PWMv2 edge-aligned mode 
+-	* PWMv2 needs two compare values to generate one PWM waveform:
+-	* - cmp1: rising edge (usually 0 for edge-aligned)  
+-	* - cmp2: falling edge (duty cycle point)
+-	*/
+-	uint32_t cmp1_val = 0;  /* Rising edge at counter start */
+-	uint32_t cmp2_val = rld_cmp;  /* Falling edge for duty cycle */
+-	
+-	pwmv2_set_shadow_val(pwm_base, shadow_cmp1, cmp1_val, 0, false);
+-	pwmv2_set_shadow_val(pwm_base, shadow_cmp2, cmp2_val, xrld_cmp, false);
+-
+-	/* Configure counter (first time only or when period changes) */
+-	pwmv2_counter_select_data_offset_from_shadow_value(pwm_base, counter, shadow_reload);
+-	pwmv2_counter_burst_disable(pwm_base, counter);
+-	pwmv2_set_reload_update_time(pwm_base, counter, pwm_reload_update_on_reload);
+-
+-	/* Configure compare sources for two CMP values */
+-	pwmv2_select_cmp_source(pwm_base, cmp_index1, cmp_value_from_shadow_val, shadow_cmp1);
+-	pwmv2_select_cmp_source(pwm_base, cmp_index2, cmp_value_from_shadow_val, shadow_cmp2);
+-	pwmv2_cmp_update_trig_time(pwm_base, cmp_index1, pwm_shadow_register_update_on_reload);
+-	pwmv2_cmp_update_trig_time(pwm_base, cmp_index2, pwm_shadow_register_update_on_reload);
+-
+-	/* Set output polarity */
+-	if (invert_output) {
+-		pwmv2_enable_output_invert(pwm_base, (pwm_channel_t)channel);
+-	} else {
+-		pwmv2_disable_output_invert(pwm_base, (pwm_channel_t)channel);
+-	}
+-
+-	/* Set dead zone if configured */
+-	if (config->dead_zone_in_half_cycle > 0) {
+-		pwmv2_set_dead_area(pwm_base, (pwm_channel_t)channel, config->dead_zone_in_half_cycle);
+-	}
+-
+-	/* Lock shadow registers to apply changes */
+-	pwmv2_shadow_register_lock(pwm_base);
+-
+-	/* Handle four cmp mode for odd channels (1, 3, 5, 7) */
+-	if (channel & 0x01) {
+-		if (pwmv2_get_cmp_working_status(pwm_base, (pwm_channel_t)(channel - 1)) == 0xFFFFFF00) {
+-			/* Odd channel - need to enable four_cmp for proper operation */
+-			pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));  /* Enable for even channel */
+-		} else {
+-			pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));
+-		}
+-	} else {
+-		/* Even channel - disable four cmp for normal PWM operation */
+-		pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)channel);
+-	}
+-	/* Enable channel output */
+-	pwmv2_channel_enable_output(pwm_base, (pwm_channel_t)channel);
+-	
+-	/* Enable and start counter */
+-	pwmv2_enable_counter(pwm_base, counter);
+-	pwmv2_start_pwm_output(pwm_base, counter);
+-
+-	return 0;
++    const struct pwm_hpmicro_config *config = dev->config;
++    HPM_PWM_BASE_TYPE *pwm_base = config->base;
++    uint32_t rld, xrld, prld, rld_cmp, xrld_cmp;
++    uint16_t i, j;
++
++    if (channel > 7) return -ENOTSUP;
++    pwm_counter_t counter = (pwm_counter_t)(channel >> 1);
++    uint8_t cmp_start_index = (channel >> 1) << 2;
++    uint8_t cmp_index1 = cmp_start_index + ((channel & 0x01) << 1);
++    uint8_t cmp_index2 = cmp_index1 + 1;
++    uint8_t shadow_reload = counter * 5;
++    uint8_t shadow_cmp1 = shadow_reload + 1 + ((channel & 0x01) << 1);
++    uint8_t shadow_cmp2 = shadow_cmp1 + 1;
++
++    bool invert_output = false;
++    if (flags == PWM_POLARITY_INVERTED) invert_output = true;
++    else if (flags == PWM_POLARITY_NORMAL) invert_output = false;
++    else return -ENOTSUP;
++
++    if (period_cycles > 0xffffff) return -ENOTSUP;
++    rld = period_cycles; xrld = 0; prld = period_cycles;
++    rld_cmp = period_cycles - pulse_cycles; xrld_cmp = 0;
++
++    pwmv2_shadow_register_unlock(pwm_base);
++    pwmv2_set_shadow_val(pwm_base, shadow_reload, rld, xrld, false);
++    pwmv2_set_shadow_val(pwm_base, shadow_cmp1, 0, 0, false);
++    pwmv2_set_shadow_val(pwm_base, shadow_cmp2, rld_cmp, xrld_cmp, false);
++    pwmv2_counter_select_data_offset_from_shadow_value(pwm_base, counter, shadow_reload);
++    pwmv2_counter_burst_disable(pwm_base, counter);
++    pwmv2_set_reload_update_time(pwm_base, counter, pwm_reload_update_on_reload);
++    pwmv2_select_cmp_source(pwm_base, cmp_index1, cmp_value_from_shadow_val, shadow_cmp1);
++    pwmv2_select_cmp_source(pwm_base, cmp_index2, cmp_value_from_shadow_val, shadow_cmp2);
++    pwmv2_cmp_update_trig_time(pwm_base, cmp_index1, pwm_shadow_register_update_on_reload);
++    pwmv2_cmp_update_trig_time(pwm_base, cmp_index2, pwm_shadow_register_update_on_reload);
++    if (invert_output) pwmv2_enable_output_invert(pwm_base, (pwm_channel_t)channel);
++    else pwmv2_disable_output_invert(pwm_base, (pwm_channel_t)channel);
++    if (config->dead_zone_in_half_cycle > 0)
++        pwmv2_set_dead_area(pwm_base, (pwm_channel_t)channel, config->dead_zone_in_half_cycle);
++    pwmv2_shadow_register_lock(pwm_base);
++    if (channel & 0x01) {
++        if (pwmv2_get_cmp_working_status(pwm_base, (pwm_channel_t)(channel - 1)) == 0xFFFFFF00)
++            pwmv2_enable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));
++        else pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)(channel - 1));
++    } else pwmv2_disable_four_cmp(pwm_base, (pwm_channel_t)channel);
++    pwmv2_channel_enable_output(pwm_base, (pwm_channel_t)channel);
++    pwmv2_enable_counter(pwm_base, counter);
++    pwmv2_start_pwm_output(pwm_base, counter);
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED */
++#endif
+ 
+ static int hpmicro_pwm_set_cycles(const struct device *dev, uint32_t channel,
+-		       uint32_t period_cycles, uint32_t pulse_cycles,
+-		       pwm_flags_t flags)
++                       uint32_t period_cycles, uint32_t pulse_cycles,
++                       pwm_flags_t flags)
+ {
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+-	return hpmicro_pwm_v1_set_cycles(dev, channel, period_cycles, pulse_cycles, flags);
+-#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED  
+-	return hpmicro_pwm_v2_set_cycles(dev, channel, period_cycles, pulse_cycles, flags);
++    return hpmicro_pwm_v1_set_cycles(dev, channel, period_cycles, pulse_cycles, flags);
++#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
++    return hpmicro_pwm_v2_set_cycles(dev, channel, period_cycles, pulse_cycles, flags);
+ #endif
+ }
+ 
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+ static int hpmicro_pwm_v1_get_cycles_per_sec(const struct device *dev,
+-			       uint32_t channel, uint64_t *cycles)
++                       uint32_t channel, uint64_t *cycles)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	uint32_t freqc;
+-
+-	freqc = clock_get_frequency(config->clock_name);
+-	*cycles = freqc;
+-
+-	return 0;
++    const struct pwm_hpmicro_config *config = dev->config;
++    uint32_t freqc = clock_get_frequency(config->clock_name);
++    *cycles = freqc;
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED */
++#endif
+ 
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ static int hpmicro_pwm_v2_get_cycles_per_sec(const struct device *dev,
+-			       uint32_t channel, uint64_t *cycles)
++                       uint32_t channel, uint64_t *cycles)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	uint32_t freqc;
+-
+-	freqc = clock_get_frequency(config->clock_name);
+-	*cycles = freqc;
+-
+-	return 0;
++    const struct pwm_hpmicro_config *config = dev->config;
++    uint32_t freqc = clock_get_frequency(config->clock_name);
++    *cycles = freqc;
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED */
++#endif
+ 
+ static int hpmicro_pwm_get_cycles_per_sec(const struct device *dev,
+-			       uint32_t channel, uint64_t *cycles)
++                       uint32_t channel, uint64_t *cycles)
+ {
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+-	return hpmicro_pwm_v1_get_cycles_per_sec(dev, channel, cycles);
+-#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED  
+-	return hpmicro_pwm_v2_get_cycles_per_sec(dev, channel, cycles);
++    return hpmicro_pwm_v1_get_cycles_per_sec(dev, channel, cycles);
++#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
++    return hpmicro_pwm_v2_get_cycles_per_sec(dev, channel, cycles);
+ #endif
+ }
+ 
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+ static int pwm_hpmicro_v1_init(const struct device *dev)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	pwm_config_t pwm_config;
+-	uint32_t freqc;
+-	HPM_PWM_BASE_TYPE *pwm_base = config->base;
+-	int err;
+-
+-	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+-	if (err < 0) {
+-		return err;
+-	}
+-
+-	pwm_get_default_pwm_config(pwm_base, &pwm_config);
+-	pwm_config.enable_output = true;
+-    pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
+-    pwm_config.invert_output = false;
+-	freqc = clock_get_frequency(config->clock_name);
+-	pwm_set_reload(pwm_base, 0, freqc / config->period);
++    const struct pwm_hpmicro_config *config = dev->config;
++    struct pwm_hpmicro_data *data = dev->data;
++    uint32_t freqc;
++    HPM_PWM_BASE_TYPE *pwm_base = config->base;
++    int err;
++
++    pwm_deinit(pwm_base);
++    err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
++    if (err < 0) return err;
++
++    freqc = clock_get_frequency(config->clock_name);
++    pwm_set_reload(pwm_base, 0, freqc / config->period);
+     pwm_set_start_count(pwm_base, 0, 0);
+-
+-	return 0;
++    pwm_start_counter(pwm_base);
++    data->configured_channels = 0;
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED */
++#endif
+ 
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
+ static int pwm_hpmicro_v2_init(const struct device *dev)
+ {
+-	const struct pwm_hpmicro_config *config = dev->config;
+-	HPM_PWM_BASE_TYPE *pwm_base = config->base;
+-	int err;
+-
+-	/* Apply pin configuration */
+-	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+-	if (err < 0) {
+-		return err;
+-	}
+-
+-	/* Deinitialize PWMv2 to reset to known state */
+-	pwmv2_deinit(pwm_base);
+-
+-	return 0;
++    const struct pwm_hpmicro_config *config = dev->config;
++    HPM_PWM_BASE_TYPE *pwm_base = config->base;
++    int err;
++    err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
++    if (err < 0) return err;
++    pwmv2_deinit(pwm_base);
++    return 0;
+ }
+-#endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED */
++#endif
+ 
+ static int pwm_hpmicro_init(const struct device *dev)
+ {
+ #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+-	return pwm_hpmicro_v1_init(dev);
+-#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED  
+-	return pwm_hpmicro_v2_init(dev);
++    return pwm_hpmicro_v1_init(dev);
++#elif CONFIG_DT_HAS_HPMICRO_HPM_PWMV2_ENABLED
++    return pwm_hpmicro_v2_init(dev);
+ #endif
+ }
+ 
+ static const struct pwm_driver_api pwm_hpmicro_driver_api = {
+-	.set_cycles = hpmicro_pwm_set_cycles,
+-	.get_cycles_per_sec = hpmicro_pwm_get_cycles_per_sec,
++    .set_cycles = hpmicro_pwm_set_cycles,
++    .get_cycles_per_sec = hpmicro_pwm_get_cycles_per_sec,
+ };
+ 
+-#define PWM_DEVICE_INIT_HPMICRO(n)			  \
+-	static struct pwm_hpmicro_data pwm_hpmicro_data_##n;		  \
+-	PINCTRL_DT_INST_DEFINE(n);					  \
+-									  \
+-	static const struct pwm_hpmicro_config pwm_hpmicro_config_##n = {     \
+-		.base = (HPM_PWM_BASE_TYPE *)DT_INST_REG_ADDR(n),	  \
+-		.clock_name = DT_INST_CLOCKS_CELL(n, name),		\
+-		.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),		  \
+-		.period = DT_INST_PROP(n, period_init),			\
+-		.dead_zone_in_half_cycle = DT_INST_PROP(n, dead_zone_in_half_cycle),	\
+-	};								  \
+-									  \
+-	DEVICE_DT_INST_DEFINE(n,					  \
+-			    pwm_hpmicro_init,				  \
+-			    NULL,					  \
+-			    &pwm_hpmicro_data_##n,			  \
+-			    &pwm_hpmicro_config_##n,			  \
+-			    POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE,\
+-			    &pwm_hpmicro_driver_api);
+-
+-DT_INST_FOREACH_STATUS_OKAY(PWM_DEVICE_INIT_HPMICRO)
++#define PWM_DEVICE_INIT_HPMICRO(n)              \
++    static struct pwm_hpmicro_data pwm_hpmicro_data_##n;          \
++    PINCTRL_DT_INST_DEFINE(n);                      \
++    static const struct pwm_hpmicro_config pwm_hpmicro_config_##n = {     \
++        .base = (HPM_PWM_BASE_TYPE *)DT_INST_REG_ADDR(n),      \
++        .clock_name = DT_INST_CLOCKS_CELL(n, name),        \
++        .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),          \
++        .period = DT_INST_PROP(n, period_init),            \
++        .dead_zone_in_half_cycle = DT_INST_PROP(n, dead_zone_in_half_cycle),    \
++    };                                  \
++    DEVICE_DT_INST_DEFINE(n,                      \
++                    pwm_hpmicro_init,              \
++                    NULL,                      \
++                    &pwm_hpmicro_data_##n,              \
++                    &pwm_hpmicro_config_##n,              \
++                    POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE,\
++                    &pwm_hpmicro_driver_api);
++
++DT_INST_FOREACH_STATUS_OKAY(PWM_DEVICE_INIT_HPMICRO)
+\ No newline at end of file
+diff --git a/drivers/spi/spi_hpmicro.c b/drivers/spi/spi_hpmicro.c
+index ddbc4d7..45240c2 100755
+--- a/drivers/spi/spi_hpmicro.c
++++ b/drivers/spi/spi_hpmicro.c
+@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(spi_hpmicro);
+ 
+ #define MAX_DATA_WIDTH		32  /* data width 1-32 bits */
+ 
+-#define CONFIG_SPI_INTERRUPT_DRIVEN 1
++#define CONFIG_SPI_INTERRUPT_DRIVEN 0
+ 
+ struct spi_hpm_config {
+ 	SPI_Type *base;

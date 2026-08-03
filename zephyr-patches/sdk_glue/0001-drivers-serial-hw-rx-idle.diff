@@ -1,0 +1,918 @@
+diff --git a/drivers/serial/Kconfig.hpmicro b/drivers/serial/Kconfig.hpmicro
+index df2a557..31a3291 100644
+--- a/drivers/serial/Kconfig.hpmicro
++++ b/drivers/serial/Kconfig.hpmicro
+@@ -10,9 +10,10 @@ config UART_HPMICRO
+ 	select SERIAL_HAS_DRIVER
+ 	select SERIAL_SUPPORT_INTERRUPT
+ 	select SERIAL_SUPPORT_ASYNC
+-	select HAS_HPMSDK_GPTMR if SERIAL_SUPPORT_ASYNC
+-	select HAS_HPMSDK_DMA if (SERIAL_SUPPORT_ASYNC && DMA_HPMICRO)
+-	select HAS_HPMSDK_DMAV2 if (SERIAL_SUPPORT_ASYNC && DMAV2_HPMICRO)	
+-	select DMA if SERIAL_SUPPORT_ASYNC
++	select UART_INTERRUPT_DRIVEN if UART_ASYNC_API
++	select HAS_HPMSDK_GPTMR if UART_ASYNC_API
++	select HAS_HPMSDK_DMA if (UART_ASYNC_API && DMA_HPMICRO)
++	select HAS_HPMSDK_DMAV2 if (UART_ASYNC_API && DMAV2_HPMICRO)
++	select DMA if UART_ASYNC_API
+ 	help
+-	  This option enables the UART driver for HPM SoC family.
+\ No newline at end of file
++	  This option enables the UART driver for HPM SoC family.
+diff --git a/drivers/serial/uart_hpmicro.c b/drivers/serial/uart_hpmicro.c
+index f1f5081..1ff9536 100644
+--- a/drivers/serial/uart_hpmicro.c
++++ b/drivers/serial/uart_hpmicro.c
+@@ -8,12 +8,25 @@
+ #define DT_DRV_COMPAT hpmicro_hpm_uart
+ 
+ #include <errno.h>
++#include <zephyr/kernel.h>
+ #include <zephyr/drivers/pinctrl.h>
+ #include <zephyr/drivers/uart.h>
+ #include <soc.h>
++#include <hpm_interrupt.h>
+ #include <hpm_common.h>
+ #include <hpm_uart_drv.h>
+ #include <hpm_clock_drv.h>
++
++#if defined(CONFIG_UART_ASYNC_API) && defined(HPM_IP_FEATURE_UART_RX_IDLE_DETECT) && \
++	(HPM_IP_FEATURE_UART_RX_IDLE_DETECT == 1)
++#define UART_HPM_USE_HW_RX_IDLE 1
++#else
++#define UART_HPM_USE_HW_RX_IDLE 0
++#endif
++
++/* NOTE(ai-authored): prefer UART hardware RX idle when the HPM UART IP supports it,
++ * and fall back to the older TRGM/GPTMR software idle path otherwise.
++ */
+ #ifdef CONFIG_UART_ASYNC_API
+ #include <hpm_trgmmux_src.h>
+ #include <hpm_trgm_drv.h>
+@@ -83,7 +96,14 @@ struct uart_hpm_cfg {
+ 	bool loopback_en;
+ #ifdef CONFIG_UART_INTERRUPT_DRIVEN
+ 	uart_irq_config_func_t irq_config_func;
++	/* HPM mod: add IRQ num/priority to support multi-instance interrupt registration */
++	uint32_t irq_num;
++	uint32_t irq_priority;
+ #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
++#ifdef CONFIG_UART_ASYNC_API
++	/* HPM mod: add idle timer interrupt config */
++	uart_irq_config_func_t idle_irq_config_func;
++#endif
+ 	const struct pinctrl_dev_config *pincfg;
+ };
+ 
+@@ -105,18 +125,89 @@ struct uart_hpm_data {
+     gptmr_info_t gptmr_info;
+ 	uint32_t idle_time_out_us;
+ 	volatile uint32_t status_flags;
++	bool rx_idle_timer_enabled;
++	struct k_work_delayable rx_timeout_work;
++	bool rx_timeout_work_enabled;
++	bool rx_idle_work_busy;
++	bool rx_idle_irq_pending;
++	bool rx_idle_data_seen;
++	uint32_t rx_idle_poll_us;
++	size_t rx_last_pending_length;
+ 	struct stream dma_rx;
+ 	struct stream dma_tx;
+ #endif
+ };
+ 
+ #ifdef CONFIG_UART_ASYNC_API
++static int uart_hpm_dma_replace_rx_buffer(const struct device *dev);
++static void uart_hpm_rx_timeout_work_handler(struct k_work *work);
++#if UART_HPM_USE_HW_RX_IDLE
++static void uart_hpm_hw_rx_idle_handler(const struct device *dev);
++static void config_gptmr_to_poll_uart_rx_idle(gptmr_info_t *gptmr_info, uint32_t poll_us);
++static void stop_gptmr_uart_rx_idle_poll(gptmr_info_t *gptmr_info);
++
++#if defined(HPM_IP_FEATURE_UART_E00018_FIX) && (HPM_IP_FEATURE_UART_E00018_FIX == 1)
++#define UART_HPM_RX_IDLE_FLAG_REG(base) ((base)->IIR2)
++#else
++#define UART_HPM_RX_IDLE_FLAG_REG(base) ((base)->IIR)
++#endif
++
++#define UART_HPM_HW_IDLE_THRESHOLD_BITS 3U
++
++#endif
++
++#if UART_HPM_USE_HW_RX_IDLE
++static void config_gptmr_to_poll_uart_rx_idle(gptmr_info_t *gptmr_info, uint32_t poll_us)
++{
++	uint32_t gptmr_freq;
++	uint32_t ticks;
++	gptmr_channel_config_t config;
++
++	if ((gptmr_info->ptr == NULL) || (poll_us == 0U)) {
++		return;
++	}
++
++	gptmr_freq = clock_get_frequency(gptmr_info->clock_name);
++	ticks = (gptmr_freq / 1000000U) * poll_us;
++	if (ticks == 0U) {
++		ticks = 1U;
++	}
++
++	gptmr_channel_get_default_config(gptmr_info->ptr, &config);
++	config.reload = ticks;
++	config.enable_cmp_output = false;
++
++	gptmr_disable_irq(gptmr_info->ptr, GPTMR_CH_RLD_IRQ_MASK(gptmr_info->cmp_ch));
++	gptmr_stop_counter(gptmr_info->ptr, gptmr_info->cmp_ch);
++	gptmr_clear_status(gptmr_info->ptr, GPTMR_CH_RLD_STAT_MASK(gptmr_info->cmp_ch));
++	gptmr_channel_reset_count(gptmr_info->ptr, gptmr_info->cmp_ch);
++	gptmr_channel_config(gptmr_info->ptr, gptmr_info->cmp_ch, &config, false);
++	gptmr_enable_irq(gptmr_info->ptr, GPTMR_CH_RLD_IRQ_MASK(gptmr_info->cmp_ch));
++	intc_m_enable_irq_with_priority(gptmr_info->irq_index, 1);
++	gptmr_start_counter(gptmr_info->ptr, gptmr_info->cmp_ch);
++}
++
++static void stop_gptmr_uart_rx_idle_poll(gptmr_info_t *gptmr_info)
++{
++	if (gptmr_info->ptr == NULL) {
++		return;
++	}
++
++	gptmr_disable_irq(gptmr_info->ptr, GPTMR_CH_RLD_IRQ_MASK(gptmr_info->cmp_ch));
++	gptmr_stop_counter(gptmr_info->ptr, gptmr_info->cmp_ch);
++	gptmr_clear_status(gptmr_info->ptr, GPTMR_CH_RLD_STAT_MASK(gptmr_info->cmp_ch));
++	gptmr_channel_reset_count(gptmr_info->ptr, gptmr_info->cmp_ch);
++}
++#endif
++
++#if !UART_HPM_USE_HW_RX_IDLE
+ static void config_gptmr_to_detect_uart_rx_idle(gptmr_info_t *gptmr_info, trgm_info_t *trgm_info, uint32_t time_out)
+ {
+     uint32_t gptmr_freq, bits;
+     gptmr_channel_config_t config;
+ 
+     bits = 12+6; /* use max value: 1 start bit, 8 data bits, 2 stop bits, 1 parity bit */
++    clock_add_to_group(gptmr_info->clock_name, 0);
+     gptmr_freq = clock_get_frequency(gptmr_info->clock_name);
+     gptmr_channel_get_default_config(gptmr_info->ptr, &config);
+     config.cmp[0] = (gptmr_freq / 1000000) * time_out; /* Time to transmit a byte */
+@@ -135,6 +226,7 @@ static void config_gptmr_to_detect_uart_rx_idle(gptmr_info_t *gptmr_info, trgm_i
+ static void config_gptmr_to_detect_uart_rx_start(gptmr_info_t *gptmr_info, trgm_info_t *trgm_info)
+ {
+     gptmr_channel_config_t config;
++    clock_add_to_group(gptmr_info->clock_name, 0);
+     gptmr_channel_get_default_config(gptmr_info->ptr, &config);
+     config.mode = gptmr_work_mode_capture_at_falling_edge;
+ 
+@@ -146,6 +238,7 @@ static void config_gptmr_to_detect_uart_rx_start(gptmr_info_t *gptmr_info, trgm_
+     gptmr_enable_irq(gptmr_info->ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info->cap_ch)); /* enable capture irq */
+     gptmr_start_counter(gptmr_info->ptr, gptmr_info->cap_ch);
+ }
++#endif
+ 
+ static int uart_hpm_dma_tx_load(const struct device *dev, const uint8_t *buf, size_t len)
+ {
+@@ -154,7 +247,6 @@ static int uart_hpm_dma_tx_load(const struct device *dev, const uint8_t *buf, si
+ 	struct dma_block_config *blk_cfg;
+ 	UART_Type *base = cfg->base;
+ 
+-	assert(buf != NULL);
+ 
+ 	/* remember active TX DMA channel (used in callback) */
+ 	struct stream *stream = &data->dma_tx;
+@@ -190,7 +282,6 @@ static int uart_hpm_dma_rx_load(const struct device *dev, uint8_t *buf, size_t l
+ 	struct dma_block_config *blk_cfg;
+ 	UART_Type *base = cfg->base;
+ 
+-	assert(buf != NULL);
+ 
+ 	/* retrieve active RX DMA channel (used in callback) */
+ 	struct stream *stream = &data->dma_rx;
+@@ -260,6 +351,13 @@ static int uart_hpm_configure_init(const struct device *dev, const struct uart_c
+     uart_config.dma_enable = true;
+ 	uart_config.tx_fifo_level = uart_tx_fifo_trg_not_full;
+ 	uart_config.rx_fifo_level = uart_rx_fifo_trg_not_empty; /* this config should not change */
++#if UART_HPM_USE_HW_RX_IDLE
++		/* HPM mod: enable hardware RX idle detection (instead of old TRGM/GPTMR path) */
++	uart_config.rxidle_config.detect_enable = true;
++	uart_config.rxidle_config.detect_irq_enable = true;
++	uart_config.rxidle_config.idle_cond = uart_rxline_idle_cond_rxline_logic_one;
++	uart_config.rxidle_config.threshold = 20U;
++#endif
+ #endif
+ 	switch (cfg->parity) {
+ 	case UART_CFG_PARITY_NONE:
+@@ -310,6 +408,7 @@ static int uart_hpm_configure_init(const struct device *dev, const struct uart_c
+ 	case UART_CFG_FLOW_CTRL_RTS_CTS:
+ 		uart_config.modem_config.auto_flow_ctrl_en = true;
+ 		break;
++	/* HPM mod: fix parity not being applied - orig SDK parses but never assigns */
+ 	default:
+ 		return -ENOTSUP;
+ 	}
+@@ -343,6 +442,19 @@ static int uart_hpm_init(const struct device *dev)
+ #ifdef CONFIG_UART_INTERRUPT_DRIVEN
+ 	cfg->irq_config_func(dev);
+ #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
++#ifdef CONFIG_UART_ASYNC_API
++#ifndef CONFIG_UART_INTERRUPT_DRIVEN
++	if (cfg->idle_irq_config_func != NULL) {
++		cfg->idle_irq_config_func(dev);
++	}
++#endif
++	/* HPM mod: async RX timeout workqueue - handle incomplete DMA frames */
++	k_work_init_delayable(&data->rx_timeout_work, uart_hpm_rx_timeout_work_handler);
++	data->rx_timeout_work_enabled = false;
++	data->rx_last_pending_length = 0U;
++	data->rx_idle_irq_pending = false;
++	data->rx_idle_data_seen = false;
++#endif
+ 
+ 	return 0;
+ }
+@@ -501,6 +613,28 @@ void uart_hpm_irq_callback_set(const struct device *dev,
+ __attribute__((section(".isr"))) static void uart_hpm_isr(const struct device *dev)
+ {
+ 	struct uart_hpm_data * const dev_data = dev->data;
++#if defined(CONFIG_UART_ASYNC_API) && UART_HPM_USE_HW_RX_IDLE
++	const struct uart_hpm_cfg *cfg = dev->config;
++	UART_Type *base = cfg->base;
++	struct dma_status stat;
++	size_t pending = dev_data->dma_rxinfo.current_total_size;
++
++	if (uart_is_rxline_idle(base)) {
++		if (dma_get_status(dev_data->dma_rx.dma_dev, dev_data->dma_rx.channel, &stat) == 0) {
++			pending = stat.pending_length;
++			if (pending < dev_data->dma_rxinfo.current_total_size) {
++				dev_data->rx_idle_data_seen = true;
++			}
++		}
++
++		uart_clear_rxline_idle_flag(base);
++		if (dev_data->rx_idle_data_seen && !dev_data->rx_idle_work_busy) {
++			dev_data->rx_idle_work_busy = true;
++			uart_hpm_hw_rx_idle_handler(dev);
++			dev_data->rx_idle_work_busy = false;
++		}
++	}
++#endif
+ 
+ 	if (dev_data->user_cb) {
+ 		dev_data->user_cb(dev, dev_data->user_data);
+@@ -510,14 +644,6 @@ __attribute__((section(".isr"))) static void uart_hpm_isr(const struct device *d
+ #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+ 
+ #ifdef CONFIG_UART_ASYNC_API
+-static inline void async_timer_start(struct k_work_delayable *work, size_t timeout_us)
+-{
+-	if ((timeout_us != SYS_FOREVER_US) && (timeout_us != 0)) {
+-		LOG_DBG("async timer started for %d us", timeout_us);
+-		k_work_reschedule(work, K_USEC(timeout_us));
+-	}
+-}
+-
+ static void async_user_callback(const struct device *dev, struct uart_event *evt)
+ {
+ 	const struct uart_hpm_data *data = dev->data;
+@@ -589,16 +715,29 @@ static void uart_hpm_async_rx_flush(const struct device *dev)
+ {
+ 	struct uart_hpm_data *data = dev->data;
+ 	size_t rx_rcv_len;
++	size_t rx_remaining;
+ 	struct dma_status stat;
+ 	int ret;
+ 
+ 	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &stat);
+ 	if (ret) {
+ 		LOG_ERR("ERR dma get status.\r\n");
++		data->dma_rxinfo.current_size = 0;
++		return;
+ 	}
+-	rx_rcv_len = data->dma_rxinfo.current_total_size - 
+-				 data->dma_rxinfo.current_offset - 
+-				 stat.pending_length;
++
++	if (data->dma_rxinfo.current_offset > data->dma_rxinfo.current_total_size) {
++		data->dma_rxinfo.current_size = 0;
++		return;
++	}
++
++	rx_remaining = data->dma_rxinfo.current_total_size - data->dma_rxinfo.current_offset;
++	if (stat.pending_length > rx_remaining) {
++		data->dma_rxinfo.current_size = 0;
++		return;
++	}
++
++	rx_rcv_len = rx_remaining - stat.pending_length;
+ 	if (rx_rcv_len > 0) {
+ 		data->dma_rxinfo.current_size = rx_rcv_len;
+ 		async_evt_rx_rdy(dev);
+@@ -606,7 +745,117 @@ static void uart_hpm_async_rx_flush(const struct device *dev)
+ 		data->dma_rxinfo.current_size = 0;
+ 	}
+ }
++#if UART_HPM_USE_HW_RX_IDLE
++static void uart_hpm_hw_rx_idle_handler(const struct device *dev)
++{
++	struct uart_hpm_data *data = dev->data;
++	const struct uart_hpm_cfg *config = dev->config;
++	UART_Type *uart_base = config->base;
++
++	if (data->dma_rxinfo.current_mode == 0U) {
++		return;
++	}
++
++	uart_disable_rxline_idle_detection(uart_base);
++
++	if (dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel) != 0) {
++		uart_enable_rxline_idle_detection(uart_base);
++		return;
++	}
++
++	uart_clear_rxline_idle_flag(uart_base);
++	(void)uart_flush(uart_base);
++	uart_hpm_async_rx_flush(dev);
++
++	if ((data->dma_rxinfo.current_size > 0U) &&
++	    (data->dma_rxinfo.next_dst_addr != NULL)) {
++		async_evt_rx_buf_release(dev);
++		if (uart_hpm_dma_replace_rx_buffer(dev) == 0) {
++			return;
++		}
++	}
++
++	(void)dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
++	uart_enable_rxline_idle_detection(uart_base);
++}
++#endif
+ 
++static void uart_hpm_rx_timeout_work_handler(struct k_work *work)
++{
++	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
++	struct uart_hpm_data *data = CONTAINER_OF(dwork, struct uart_hpm_data, rx_timeout_work);
++	const struct device *dev = data->dma_rxinfo.dev;
++#if UART_HPM_USE_HW_RX_IDLE
++	if (!data->rx_timeout_work_enabled || data->rx_idle_work_busy ||
++	    (dev == NULL) || (data->dma_rxinfo.current_mode == 0U)) {
++		return;
++	}
++
++	if (!data->rx_idle_irq_pending) {
++		return;
++	}
++
++	data->rx_idle_irq_pending = false;
++	data->rx_idle_work_busy = true;
++	uart_hpm_hw_rx_idle_handler(dev);
++	if (data->rx_idle_timer_enabled) {
++		config_gptmr_to_poll_uart_rx_idle(&data->gptmr_info, data->rx_idle_poll_us);
++	}
++	data->rx_idle_work_busy = false;
++#else
++	const struct uart_hpm_cfg *config;
++	UART_Type *uart_base;
++	struct dma_status stat;
++	size_t pending;
++	size_t rx_remaining;
++	int ret;
++
++	if (!data->rx_timeout_work_enabled || data->rx_idle_work_busy ||
++	    (dev == NULL) || (data->dma_rxinfo.current_mode == 0U)) {
++		return;
++	}
++
++	config = dev->config;
++	uart_base = config->base;
++
++	ret = dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &stat);
++	if (ret != 0) {
++		goto reschedule;
++	}
++
++	pending = stat.pending_length;
++	if (pending != data->rx_last_pending_length) {
++		data->rx_last_pending_length = pending;
++		goto reschedule;
++	}
++
++	if (data->dma_rxinfo.current_offset > data->dma_rxinfo.current_total_size) {
++		goto reschedule;
++	}
++
++	rx_remaining = data->dma_rxinfo.current_total_size - data->dma_rxinfo.current_offset;
++	if (pending >= rx_remaining) {
++		goto reschedule;
++	}
++
++	if (dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel) == 0) {
++		uart_hpm_async_rx_flush(dev);
++		if ((data->dma_rxinfo.current_size > 0U) && (data->dma_rxinfo.next_dst_addr != NULL)) {
++			async_evt_rx_buf_release(dev);
++			if (uart_hpm_dma_replace_rx_buffer(dev) == 0) {
++				return;
++			}
++		} else {
++			(void)dma_resume(data->dma_rx.dma_dev, data->dma_rx.channel);
++		}
++	}
++
++reschedule:
++	if (data->rx_timeout_work_enabled && (data->rx_idle_poll_us > 0U)) {
++		k_work_reschedule(&data->rx_timeout_work, K_USEC(data->rx_idle_poll_us));
++	}
++#endif
++}
+ static uint32_t uart_hpm_async_tx_flush(const struct device *dev)
+ {
+ 	struct uart_hpm_data *data = dev->data;
+@@ -614,7 +863,7 @@ static uint32_t uart_hpm_async_tx_flush(const struct device *dev)
+ 	struct dma_status stat;
+ 	int ret;
+ 
+-	ret = dma_get_status(dev, data->dma_tx.channel, &stat);
++	ret = dma_get_status(data->dma_tx.dma_dev, data->dma_tx.channel, &stat);
+ 	if (ret) {
+ 		LOG_ERR("ERR dma get status.\r\n");
+ 	}
+@@ -631,17 +880,31 @@ static int uart_hpm_rx_disable(const struct device *dev)
+ {
+ 	struct uart_hpm_data *data = dev->data;
+ 	const unsigned int key = irq_lock();
++#if UART_HPM_USE_HW_RX_IDLE
++	const struct uart_hpm_cfg *config = dev->config;
++	UART_Type *uart_base = config->base;
++
++	uart_disable_rxline_idle_detection(uart_base);
++	uart_disable_irq(uart_base, uart_intr_rx_data_avail_or_timeout);
++	uart_disable_irq(uart_base, uart_intr_rx_line_idle);
++	uart_clear_rxline_idle_flag(uart_base);
++	if (data->rx_idle_timer_enabled) {
++		stop_gptmr_uart_rx_idle_poll(&data->gptmr_info);
++	}
++#else
++	if (data->rx_idle_timer_enabled) {
++		gptmr_clear_status(data->gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(data->gptmr_info.cmp_ch, 0)); /* clear cmp status */
++		gptmr_stop_counter(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* stop counter */
++		gptmr_channel_reset_count(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* clear counter */
++		gptmr_disable_irq(data->gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(data->gptmr_info.cmp_ch, 0)); /* disable cmp irq */
++	}
++#endif
+ 
+-	gptmr_clear_status(data->gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(data->gptmr_info.cmp_ch, 0)); /* clear cmp status */
+-	gptmr_stop_counter(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* stop counter */
+-	gptmr_channel_reset_count(data->gptmr_info.ptr, data->gptmr_info.cmp_ch); /* clear counter */
+-	gptmr_disable_irq(data->gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(data->gptmr_info.cmp_ch, 0)); /* disable cmp irq */
+-	
+ 	dma_suspend(data->dma_rx.dma_dev, data->dma_rx.channel);
+ 	uart_hpm_async_rx_flush(dev);
+ 	async_evt_rx_buf_release(dev);
+ 
+-		/* disable dma channel */
++	/* disable dma channel */
+ 	dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
+ 
+ 	data->dma_rxinfo.next_dst_addr = NULL;
+@@ -658,9 +921,14 @@ static int uart_hpm_rx_disable(const struct device *dev)
+ 
+ 	async_user_callback(dev, &disabled_event);
+ 	irq_unlock(key);
++	data->rx_timeout_work_enabled = false;
++	k_work_cancel_delayable(&data->rx_timeout_work);
++	data->rx_idle_irq_pending = false;
++	data->rx_idle_data_seen = false;
+ 	return 0;
+ }
+ 
++#if !UART_HPM_USE_HW_RX_IDLE
+ /* this handler used to detect uart idle status */
+ /* when gptmr cap irq occurs, think as uart rx start, enable gptmr cmp irq for rx idle */
+ /* when gptmr cmp irq occurs, think as uart rx idle status, close gptmr cmp irq, close uart dma */
+@@ -669,9 +937,13 @@ void gptmr_detect_uart_rx_idle_handler(const struct device *dev)
+ 	struct uart_hpm_data * const data = dev->data;
+     gptmr_info_t gptmr_info = data->gptmr_info;
+ 
++	if (!data->rx_idle_timer_enabled) {
++		return;
++	}
++
+     /* cmp */
+     if (gptmr_check_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0))) {
+-        gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0)); /* clear cmp status */
++        gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0) | GPTMR_CH_CAP_STAT_MASK(gptmr_info.cap_ch)); /* clear cmp and capture status */
+         gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch); /* stop counter */
+         gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cmp_ch); /* clear counter */
+         gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0)); /* disable cmp irq */
+@@ -708,18 +980,81 @@ static void uart_hpm_timer_isr(const struct device *dev)
+ {
+ 	gptmr_detect_uart_rx_idle_handler(dev);
+ }
++#else
++static void uart_hpm_timer_isr(const struct device *dev)
++{
++	struct uart_hpm_data *data = dev->data;
++	const struct uart_hpm_cfg *config = dev->config;
++	gptmr_info_t gptmr_info = data->gptmr_info;
++	struct dma_status stat;
++	bool rx_idle;
++	size_t pending = data->dma_rxinfo.current_total_size;
++
++	if (gptmr_check_status(gptmr_info.ptr, GPTMR_CH_RLD_STAT_MASK(gptmr_info.cmp_ch))) {
++		gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_RLD_STAT_MASK(gptmr_info.cmp_ch));
++	}
++
++	if (!data->rx_idle_timer_enabled || (data->dma_rxinfo.current_mode == 0U)) {
++		return;
++	}
++
++	if (dma_get_status(data->dma_rx.dma_dev, data->dma_rx.channel, &stat) == 0) {
++		pending = stat.pending_length;
++		if (!data->rx_idle_data_seen && (pending < data->dma_rxinfo.current_total_size)) {
++			data->rx_idle_data_seen = true;
++		}
++	}
++	rx_idle = uart_is_rxline_idle(config->base);
++
++	if (!data->rx_idle_data_seen) {
++		if (rx_idle) {
++			uart_clear_rxline_idle_flag(config->base);
++		}
++		return;
++	}
++
++	if (rx_idle) 
++	{
++		if (!data->rx_idle_work_busy) {
++			data->rx_idle_work_busy = true;
++			gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_RLD_IRQ_MASK(gptmr_info.cmp_ch));
++			gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch);
++			gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_RLD_STAT_MASK(gptmr_info.cmp_ch));
++			uart_hpm_hw_rx_idle_handler(dev);
++			if (data->rx_idle_timer_enabled) {
++				config_gptmr_to_poll_uart_rx_idle(&data->gptmr_info, data->rx_idle_poll_us);
++			}
++			data->rx_idle_work_busy = false;
++		}
++	}
++}
++#endif
+ 
+ static int uart_hpm_dma_replace_rx_buffer(const struct device *dev)
+ {
+-	struct uart_hpm_data * data = dev->data;
++	struct uart_hpm_data *data = dev->data;
++#if !UART_HPM_USE_HW_RX_IDLE
+     gptmr_info_t gptmr_info = data->gptmr_info;
++#else
++	const struct uart_hpm_cfg *config = dev->config;
++	UART_Type *uart_base = config->base;
++#endif
+ 	unsigned int key = irq_lock();
+ 
+ 	if (data->dma_rxinfo.next_dst_addr != NULL) {
+-		gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0)); /* clear cmp status */
+-		gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch); /* stop counter */
+-		gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cmp_ch); /* clear counter */
+-		gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0)); /* disable cmp irq */
++#if !UART_HPM_USE_HW_RX_IDLE
++		if (data->rx_idle_timer_enabled) {
++			gptmr_clear_status(gptmr_info.ptr, GPTMR_CH_CMP_STAT_MASK(gptmr_info.cmp_ch, 0) | GPTMR_CH_CAP_STAT_MASK(gptmr_info.cap_ch)); /* clear cmp and capture status */
++			gptmr_stop_counter(gptmr_info.ptr, gptmr_info.cmp_ch); /* stop counter */
++			gptmr_channel_reset_count(gptmr_info.ptr, gptmr_info.cmp_ch); /* clear counter */
++			gptmr_disable_irq(gptmr_info.ptr, GPTMR_CH_CMP_IRQ_MASK(gptmr_info.cmp_ch, 0)); /* disable cmp irq */
++		}
++	#else
++		uart_disable_rxline_idle_detection(uart_base);
++		uart_disable_irq(uart_base, uart_intr_rx_data_avail_or_timeout);
++		uart_disable_irq(uart_base, uart_intr_rx_line_idle);
++		uart_clear_rxline_idle_flag(uart_base);
++	#endif
+ 		dma_stop(data->dma_rx.dma_dev, data->dma_rx.channel);
+ 		data->dma_rxinfo.current_buf = data->dma_rxinfo.next_dst_addr;
+ 		data->dma_rxinfo.current_total_size = data->dma_rxinfo.next_buff_size;
+@@ -728,9 +1063,23 @@ static int uart_hpm_dma_replace_rx_buffer(const struct device *dev)
+ 		data->dma_rxinfo.next_buff_size = 0;
+ 		data->dma_rxinfo.current_mode = 0;
+ 		data->dma_rxinfo.current_offset = 0;
++		data->rx_last_pending_length = data->dma_rxinfo.current_total_size;
++		data->rx_idle_data_seen = false;
+ 		async_evt_rx_buf_request(dev);
+-		gptmr_enable_irq(gptmr_info.ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info.cap_ch));
+-		gptmr_start_counter(gptmr_info.ptr, gptmr_info.cap_ch);
++#if !UART_HPM_USE_HW_RX_IDLE
++		if (data->rx_idle_timer_enabled) {
++			gptmr_enable_irq(gptmr_info.ptr, GPTMR_CH_CAP_IRQ_MASK(gptmr_info.cap_ch));
++			gptmr_start_counter(gptmr_info.ptr, gptmr_info.cap_ch);
++		}
++	#else
++		uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf,
++				     data->dma_rxinfo.current_total_size);
++		dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
++		data->dma_rxinfo.current_mode = 1;
++		uart_enable_irq(uart_base, uart_intr_rx_data_avail_or_timeout);
++		uart_enable_irq(uart_base, uart_intr_rx_line_idle);
++		uart_enable_rxline_idle_detection(uart_base);
++	#endif
+ 		irq_unlock(key);
+ 		return 0;
+ 	} else {
+@@ -777,7 +1126,7 @@ static int uart_hpm_tx_abort(const struct device *dev)
+ 	struct uart_hpm_data *data = dev->data;
+ 	uint32_t len;
+ 
+-	stat = dma_suspend(dev, data->dma_tx.channel);
++	stat = dma_suspend(data->dma_tx.dma_dev, data->dma_tx.channel);
+ 	if (stat) {
+ 		LOG_ERR("ERR dma suspend error.\r\n");
+ 		return stat;
+@@ -788,7 +1137,7 @@ static int uart_hpm_tx_abort(const struct device *dev)
+ 			.data.tx.buf = data->dma_txinfo.dst_addr,
+ 			.data.tx.len = len
+ 	};
+-	stat = dma_stop(dev, data->dma_tx.channel);
++	stat = dma_stop(data->dma_tx.dma_dev, data->dma_tx.channel);
+ 	if (stat) {
+ 		LOG_ERR("ERR dma stop error.\r\n");
+ 		return stat;
+@@ -805,6 +1154,13 @@ static int uart_hpm_rx_enable(const struct device *dev, uint8_t *buf, const size
+ 	const struct uart_hpm_cfg *config = dev->config;
+ 	UART_Type *uart_base = config->base;
+ 	volatile uint8_t buff;
++	uint32_t idle_timeout_us;
++
++#if !UART_HPM_USE_HW_RX_IDLE
++	if (!data->rx_idle_timer_enabled) {
++		return -ENOTSUP;
++	}
++#endif
+ 
+ 	unsigned int key = irq_lock();
+ 
+@@ -813,23 +1169,74 @@ static int uart_hpm_rx_enable(const struct device *dev, uint8_t *buf, const size
+ 	data->dma_rxinfo.next_dst_addr = NULL;
+ 	data->dma_rxinfo.next_buff_size = 0;
+ 	data->dma_rxinfo.current_mode = 0;
+-	data->idle_time_out_us = timeout_us;
++	if (timeout_us > 0) {
++		idle_timeout_us = (uint32_t)timeout_us;
++	} else {
++		uint32_t baudrate = data->uart_info.baudrate;
++
++		if (baudrate == 0U) {
++			baudrate = config->baud_rate;
++		}
++
++		idle_timeout_us = (baudrate > 0U) ? ((20000000U + baudrate - 1U) / baudrate) : 1U;
++	}
++	data->idle_time_out_us = idle_timeout_us;
+ 	data->dma_rxinfo.current_offset = 0;
+ 	data->dma_rxinfo.current_buf = data->dma_rxinfo.dst_addr;
+ 	data->dma_rxinfo.current_total_size = data->dma_rxinfo.buff_size;
+ 	data->dma_rxinfo.current_size = 0;
+ 	data->dma_rxinfo.dev = (struct device *)dev;
++	data->rx_last_pending_length = data->dma_rxinfo.current_total_size;
++	data->rx_idle_data_seen = false;
+ 	uart_reset_rx_fifo(uart_base);
+ 	while ((uart_base->LSR & UART_LSR_OE_MASK) || \
+ 			(uart_base->LSR & UART_LSR_DR_MASK)) {
+ 		buff = uart_base->RBR & UART_RBR_RBR_MASK;
+ 	}
+ 	async_evt_rx_buf_request(dev);
++#if UART_HPM_USE_HW_RX_IDLE
++	clock_add_to_group(data->gptmr_info.clock_name, 0);
++	irq_enable(config->irq_num);
++	{
++		uint8_t threshold_bits = UART_HPM_HW_IDLE_THRESHOLD_BITS;
++		uint32_t baudrate = data->uart_info.baudrate;
++		uart_rxline_idle_config_t idle_cfg;
++
++		if (baudrate == 0U) {
++			baudrate = config->baud_rate;
++		}
++
++		idle_cfg.detect_enable = true;
++		idle_cfg.detect_irq_enable = true;
++		idle_cfg.idle_cond = uart_rxline_idle_cond_state_machine_idle;
++		idle_cfg.threshold = threshold_bits;
++		uart_init_rxline_idle_detection(uart_base, idle_cfg);
++		uart_enable_irq(uart_base, uart_intr_rx_data_avail_or_timeout);
++		uart_enable_irq(uart_base, uart_intr_rx_line_idle);
++		uart_clear_rxline_idle_flag(uart_base);
++		data->rx_idle_poll_us = (baudrate > 0U) ?
++			(((uint32_t)threshold_bits * 1000000U + baudrate - 1U) / baudrate) : 1U;
++		data->rx_idle_poll_us = (data->rx_idle_poll_us + 3U) / 4U;
++		if (data->rx_idle_poll_us == 0U) {
++			data->rx_idle_poll_us = 1U;
++		}
++	}
++#else
+ 	config_gptmr_to_detect_uart_rx_start(&data->gptmr_info, &data->trgm_info);
+     config_gptmr_to_detect_uart_rx_idle(&data->gptmr_info, &data->trgm_info, data->idle_time_out_us);
++#endif
+ 	uart_hpm_dma_rx_load(dev, data->dma_rxinfo.current_buf, data->dma_rxinfo.current_total_size);
+ 	dma_start(data->dma_rx.dma_dev, data->dma_rx.channel);
+ 	data->dma_rxinfo.current_mode = 1;
++#if UART_HPM_USE_HW_RX_IDLE
++	uart_enable_rxline_idle_detection(uart_base);
++	if (data->rx_idle_timer_enabled) {
++		data->rx_timeout_work_enabled = false;
++	} else {
++		data->rx_timeout_work_enabled = true;
++		k_work_reschedule(&data->rx_timeout_work, K_USEC(data->rx_idle_poll_us));
++	}
++#endif
+ 	irq_unlock(key);
+ 
+ 	return 0;
+@@ -868,8 +1275,7 @@ static void uart_hpm_dma_callback(const struct device *dev, void *arg, uint32_t
+ 				uart_hpm_rx_disable(data->dma_rxinfo.dev);
+ 			}
+ 		} else {
+-			LOG_ERR("DMA callback channel %d is not valid.",
+-								channel);
++			LOG_ERR("DMA callback channel %d is not valid.", channel);
+ 		}
+ 	}
+ }
+@@ -909,7 +1315,6 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ #endif
+ };
+ 
+-
+ #define UART_HPMICRO_IRQ_FLAGS_SENSE0(n) 0
+ #define UART_HPMICRO_IRQ_FLAGS_SENSE1(n) DT_INST_IRQ(n, sense)
+ #define UART_HPMICRO_IRQ_FLAGS(n) \
+@@ -932,21 +1337,42 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ 		irq_enable(DT_INST_IRQN(n));	\
+ 	}
+ #else /* CONFIG_UART_ASYNC_API */
++#if UART_HPM_USE_HW_RX_IDLE
++#define UART_HPMICRO_IDLE_IRQ_CONNECT(n) \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_gptmr_reg), \
++		( \
++		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(n, 1), \
++		DT_INST_IRQ_BY_NAME(n, idletimer, priority),	\
++		uart_hpm_timer_isr, DEVICE_DT_INST_GET(n),	\
++		UART_HPMICRO_IRQ_FLAGS(n));		\
++		irq_enable(DT_INST_IRQN_BY_IDX(n, 1)); \
++		intc_m_enable_irq_with_priority(DT_INST_IRQ_BY_NAME(n, idletimer, irq), \
++						DT_INST_IRQ_BY_NAME(n, idletimer, priority)); \
++		), ())
++#else
++#define UART_HPMICRO_IDLE_IRQ_CONNECT(n) \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_trgm_reg), \
++		( \
++		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(n, 1), \
++		DT_INST_IRQ_BY_NAME(n, idletimer, priority),	\
++		uart_hpm_timer_isr, DEVICE_DT_INST_GET(n),	\
++		UART_HPMICRO_IRQ_FLAGS(n));		\
++		irq_enable(DT_INST_IRQN_BY_IDX(n, 1)); \
++		intc_m_enable_irq_with_priority(DT_INST_IRQ_BY_NAME(n, idletimer, irq), \
++						DT_INST_IRQ_BY_NAME(n, idletimer, priority)); \
++		), ())
++#endif
++
+ #define UART_HPMICRO_IRQ_FUNC_DEFINE(n)	\
+ 	static void irq_config_func##n(const struct device *dev)	\
+ 	{	\
+ 		ARG_UNUSED(dev);	\
+-		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, uart, irq), \
++		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(n, 0), \
+ 		DT_INST_IRQ_BY_NAME(n, uart, priority),	\
+ 		uart_hpm_isr, DEVICE_DT_INST_GET(n),	\
+ 		UART_HPMICRO_IRQ_FLAGS(n));		\
+-		irq_enable(DT_INST_IRQ_BY_NAME(n, uart, irq));	\
+-		\
+-		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(n, idletimer, irq), \
+-		DT_INST_IRQ_BY_NAME(n, idletimer, priority),	\
+-		uart_hpm_timer_isr, DEVICE_DT_INST_GET(n),	\
+-		UART_HPMICRO_IRQ_FLAGS(n));		\
+-		irq_enable(DT_INST_IRQ_BY_NAME(n, idletimer, irq));	\
++		irq_enable(DT_INST_IRQN_BY_IDX(n, 0));	\
++		UART_HPMICRO_IDLE_IRQ_CONNECT(n) \
+ 	}
+ 
+ #endif /* !CONFIG_UART_ASYNC_API */
+@@ -958,6 +1384,73 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
+ 
+ #ifdef CONFIG_UART_ASYNC_API
++#if !defined(CONFIG_UART_INTERRUPT_DRIVEN) && UART_HPM_USE_HW_RX_IDLE
++#define DEV_CONFIG_IDLE_IRQ_FUNC_INIT(n) \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_gptmr_reg), \
++		(.idle_irq_config_func = idle_irq_config_func##n,), ())
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DECLARE(n) \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_gptmr_reg), \
++		(static void idle_irq_config_func##n(const struct device *dev);), ())
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DEFINE(n) \
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_gptmr_reg), \
++		(static void idle_irq_config_func##n(const struct device *dev) \
++		{ \
++			ARG_UNUSED(dev); \
++			IRQ_CONNECT(DT_INST_IRQN_BY_IDX(n, 1), \
++			DT_INST_IRQ_BY_NAME(n, idletimer, priority), \
++			uart_hpm_timer_isr, DEVICE_DT_INST_GET(n), \
++			UART_HPMICRO_IRQ_FLAGS(n)); \
++			irq_enable(DT_INST_IRQN_BY_IDX(n, 1)); \
++			intc_m_enable_irq_with_priority(DT_INST_IRQ_BY_NAME(n, idletimer, irq), \
++							DT_INST_IRQ_BY_NAME(n, idletimer, priority)); \
++		}), ())
++#else
++#define DEV_CONFIG_IDLE_IRQ_FUNC_INIT(n)
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DECLARE(n)
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DEFINE(n)
++#endif
++#else
++#define DEV_CONFIG_IDLE_IRQ_FUNC_INIT(n)
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DECLARE(n)
++#define UART_HPMICRO_IDLE_IRQ_FUNC_DEFINE(n)
++#endif
++
++#ifdef CONFIG_UART_ASYNC_API
++#if UART_HPM_USE_HW_RX_IDLE
++#define UART_IDLE_TIMER_DATA_INIT(n)	\
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_gptmr_reg),	\
++		(	\
++		.rx_idle_timer_enabled = true,	\
++		.gptmr_info = {	\
++			.ptr = (GPTMR_Type *)DT_INST_PROP(n, uart_idle_gptmr_reg),	\
++			.clock_name = DT_INST_PROP(n, uart_idle_gptmr_clock_name),	\
++			.cmp_ch = 0,	\
++			.cap_ch = 2,	\
++			.irq_index = DT_INST_IRQ_BY_NAME(n, idletimer, irq),	\
++		},),	\
++		(.rx_idle_timer_enabled = false,))
++#else
++#define UART_IDLE_TIMER_DATA_INIT(n)	\
++	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, uart_idle_trgm_reg),	\
++		(	\
++		.rx_idle_timer_enabled = true,	\
++		.trgm_info = {	\
++			.ptr = (TRGM_Type *)DT_INST_PROP(n, uart_idle_trgm_reg),	\
++			.pin_index = DT_INST_PROP(n, uart_idle_trgm_pin),	\
++			.input_src = DT_INST_PROP(n, uart_idle_trgm_input_src),	\
++			.output_gptmr_in = DT_INST_PROP(n, uart_idle_trgm_output_gptmr_in),	\
++			.output_gptmr_synci = DT_INST_PROP(n, uart_idle_trgm_output_gptmr_sync),	\
++		},	\
++		.gptmr_info = {	\
++			.ptr = (GPTMR_Type *)DT_INST_PROP(n, uart_idle_gptmr_reg),	\
++			.clock_name = DT_INST_PROP(n, uart_idle_gptmr_clock_name),	\
++			.cmp_ch = 0,	\
++			.cap_ch = 2,	\
++			.irq_index = DT_INST_IRQ_BY_NAME(n, idletimer, irq),	\
++		},),	\
++		(.rx_idle_timer_enabled = false,))
++#endif
++
+ #define UART_HPMICRO_ASYNC_DATA_INIT(n)	\
+ 		.uart_rx_idle = false,	\
+ 		.uart_receive_data_size = 0,	\
+@@ -965,20 +1458,7 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ 					.ptr = (UART_Type *)DT_INST_REG_ADDR(n),	\
+ 					.baudrate = DT_INST_PROP(n, current_speed),	\
+ 		},	\
+-		.trgm_info = {	\
+-                .ptr = (TRGM_Type *)DT_INST_PROP(n, uart_idle_trgm_reg),	\
+-                .pin_index = DT_INST_PROP(n, uart_idle_trgm_pin),	\
+-                .input_src = DT_INST_PROP(n, uart_idle_trgm_input_src),	\
+-                .output_gptmr_in = DT_INST_PROP(n, uart_idle_trgm_output_gptmr_in),	\
+-                .output_gptmr_synci = DT_INST_PROP(n, uart_idle_trgm_output_gptmr_sync),	\
+-    	},	\
+-		.gptmr_info = {	\
+-                .ptr = (GPTMR_Type *)DT_INST_PROP(n, uart_idle_gptmr_reg),	\
+-                .clock_name = DT_INST_PROP(n, uart_idle_gptmr_clock_name),	\
+-                .cmp_ch = 0,	\
+-                .cap_ch = 2,	\
+-    	},
+-
++		UART_IDLE_TIMER_DATA_INIT(n)
+ #define UART_DMA_CHANNELS_DATA_INIT(n)		\
+ 		.dma_tx = {						\
+ 			.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR_BY_NAME(n, tx)), \
+@@ -1018,6 +1498,7 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ #define HPM_UART_INIT(n)	\
+ 		PINCTRL_DEFINE(n)	\
+ 		UART_HPMICRO_IRQ_FUNC_DECLARE(n)	\
++		UART_HPMICRO_IDLE_IRQ_FUNC_DECLARE(n)	\
+ 		static struct uart_hpm_data uart_hpm_data_##n = {	\
+ 		UART_HPMICRO_ASYNC_DATA_INIT(n)	\
+ 		UART_DMA_CHANNELS_DATA_INIT(n)			\
+@@ -1031,7 +1512,12 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ 			.baud_rate = DT_INST_PROP(n, current_speed),	\
+ 			.flow_ctrl = DT_INST_PROP(n, hw_flow_control) ?				\
+ 			UART_CFG_FLOW_CTRL_RTS_CTS : UART_CFG_FLOW_CTRL_NONE,		\
++			COND_CODE_1(CONFIG_UART_INTERRUPT_DRIVEN, \
++				(.irq_num = DT_INST_IRQN_BY_IDX(n, 0), \
++				 .irq_priority = DT_INST_IRQ_BY_NAME(n, uart, priority),), \
++				()) \
+ 			DEV_CONFIG_IRQ_FUNC_INIT(n)		\
++			DEV_CONFIG_IDLE_IRQ_FUNC_INIT(n)	\
+ 			PINCTRL_INIT(n)		\
+ 		};	\
+ 		DEVICE_DT_INST_DEFINE(n, uart_hpm_init,	\
+@@ -1040,6 +1526,7 @@ static const struct uart_driver_api uart_hpm_driver_api = {
+ 					&uart_hpm_config_##n, PRE_KERNEL_1,	\
+ 					CONFIG_SERIAL_INIT_PRIORITY,	\
+ 					&uart_hpm_driver_api);	\
+-		UART_HPMICRO_IRQ_FUNC_DEFINE(n)
++		UART_HPMICRO_IRQ_FUNC_DEFINE(n) \
++		UART_HPMICRO_IDLE_IRQ_FUNC_DEFINE(n)
+ 
+ DT_INST_FOREACH_STATUS_OKAY(HPM_UART_INIT)

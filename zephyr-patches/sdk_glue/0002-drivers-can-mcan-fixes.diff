@@ -1,0 +1,185 @@
+diff --git a/drivers/can/CMakeLists.txt b/drivers/can/CMakeLists.txt
+index 6e78b19..abda247 100644
+--- a/drivers/can/CMakeLists.txt
++++ b/drivers/can/CMakeLists.txt
+@@ -1,6 +1,12 @@
+ # Copyright (c) 2023-2024 HPMicro
+ # SPDX-License-Identifier: Apache-2.0
+ 
+-zephyr_library_amend()
++# CONFIG_CAN must be enabled for Zephyr's drivers/can to create the
++# drivers__can library target. If it's not set, create our own target.
++if(CONFIG_CAN)
++  zephyr_library_amend()
++else()
++  zephyr_library()
++endif()
+ zephyr_library_sources_ifdef(CONFIG_CAN_HPMICRO can_hpmicro.c)
+ zephyr_library_sources_ifdef(CONFIG_MCAN_HPMICRO mcan_hpmicro.c)
+\ No newline at end of file
+diff --git a/drivers/can/Kconfig.hpmicro b/drivers/can/Kconfig.hpmicro
+index ae62d97..55864ff 100644
+--- a/drivers/can/Kconfig.hpmicro
++++ b/drivers/can/Kconfig.hpmicro
+@@ -9,6 +9,7 @@ config CAN_HPMICRO
+ 	bool "HPMICRO CAN driver"
+ 	default y
+ 	depends on DT_HAS_HPMICRO_HPM_CAN_ENABLED
++	select CAN
+     select HAS_HPMSDK_CAN
+     help
+         Enable the HPMICRO CAN driver
+@@ -19,6 +20,7 @@ config MCAN_HPMICRO
+ 	bool "HPMICRO MCAN driver"
+ 	default y
+ 	depends on DT_HAS_HPMICRO_HPM_MCAN_ENABLED
++	select CAN
+     select HAS_HPMSDK_MCAN
+     help
+         Enable the HPMICRO MCAN driver
+diff --git a/drivers/can/mcan_hpmicro.c b/drivers/can/mcan_hpmicro.c
+index a5327df..67015d0 100644
+--- a/drivers/can/mcan_hpmicro.c
++++ b/drivers/can/mcan_hpmicro.c
+@@ -28,8 +28,6 @@
+ #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
+ 
+ static mcan_rx_message_t s_can_rx_buf;
+-static volatile bool has_sent_out;
+-
+ #define HPM_MCAN_NUM_TX_BUF_ELEMENTS (32U)
+ #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
+ 
+@@ -296,7 +294,6 @@ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *de
+     }
+     /* Transmit completed */
+     if ((flags & MCAN_EVENT_TRANSMIT) != 0U) {
+-        has_sent_out = true;
+         hpm_mcan_tc_event_handler(dev, 0);
+     }
+ 
+@@ -328,7 +325,6 @@ static int hpm_mcan_init(const struct device *dev)
+ 
+     data->filter_rtr = 0;
+     data->filter_rtr_mask = 0;
+-    has_sent_out = true;
+ 
+     /* Configure dt provided device signals when available */
+     ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
+@@ -347,6 +343,8 @@ static int hpm_mcan_init(const struct device *dev)
+ 
+     mcan_get_default_config(can, config);
+ 
++    config->baudrate = cfg->common.bitrate;
++
+     clock_add_to_group(cfg->clock_name, 0);
+ 
+     clock_set_source_divider(cfg->clock_name, cfg->clock_src, cfg->clock_div);
+@@ -366,6 +364,9 @@ static int hpm_mcan_init(const struct device *dev)
+ 
+     uint32_t can_clk_freq = clock_get_frequency(cfg->clock_name);
+     status = mcan_init(can, config, can_clk_freq);
++    /* printk("CAN: clock=%lu baud=%lu NBTP=0x%08lx\n",
++           (unsigned long)can_clk_freq, (unsigned long)config->baudrate,
++           (unsigned long)can->NBTP); */
+     if (status != status_success) {
+         ret = -EAGAIN;
+     } else {
+@@ -530,12 +531,6 @@ static int hpm_mcan_send(const struct device *dev,
+ 		return -ENETDOWN;
+ 	}
+ 
+-    while (!has_sent_out) {
+-
+-    }
+-
+-    has_sent_out = false;
+-
+     (void) hpm_mcan_get_state(dev, &state, NULL);
+     if (state == CAN_STATE_BUS_OFF) {
+         LOG_DBG("Transmit failed, bus-off");
+@@ -560,6 +555,7 @@ static int hpm_mcan_send(const struct device *dev,
+ 
+     k_mutex_unlock(&data->tx_mutex);
+     if (status != 0) {
++        k_sem_give(&data->tx_sem);
+         return -EIO;
+     }
+ 
+@@ -784,37 +780,38 @@ static int hpm_mcan_get_state(const struct device *dev,
+                              struct can_bus_err_cnt *err_cnt)
+ {
+     int ret = 0;
+-    mcan_protocol_status_t protocol_status;
+     const struct hpm_mcan_config *cfg = dev->config;
+     MCAN_Type *can = cfg->base;
+     const struct hpm_mcan_data *data = dev->data;
+-    mcan_error_count_t error_count;
+-    memset(&error_count, 0, sizeof(mcan_error_count_t));
+ 
+     if (!data->started) {
+-        *state = CAN_STATE_STOPPED;
+-    } else {
+         if (state != NULL) {
+-            uint8_t flags = mcan_get_interrupt_flags(can);
+-            if ((flags & MCAN_EVENT_ERROR) != 0) {
+-                mcan_parse_protocol_status(can->PSR, &protocol_status);
+-                mcan_get_error_counter(can, &error_count);
+-                if (protocol_status.in_bus_off_state) {
+-                    *state = CAN_STATE_BUS_OFF;
+-                } else if (protocol_status.in_warning_state) {
+-                    *state = CAN_STATE_ERROR_WARNING;
+-                } else if (protocol_status.in_error_passive_state) {
+-                    *state = CAN_STATE_ERROR_PASSIVE;
+-                } else {
+-                    *state = CAN_STATE_ERROR_ACTIVE;
+-                }
+-            } else {
+-                *state = CAN_STATE_ERROR_ACTIVE;
+-            }
++            *state = CAN_STATE_STOPPED;
++        }
++        if (err_cnt != NULL) {
++            err_cnt->tx_err_cnt = 0;
++            err_cnt->rx_err_cnt = 0;
++        }
++        return 0;
++    }
++
++    if (state != NULL) {
++        mcan_protocol_status_t protocol_status;
++        mcan_parse_protocol_status(can->PSR, &protocol_status);
++        if (protocol_status.in_bus_off_state) {
++            *state = CAN_STATE_BUS_OFF;
++        } else if (protocol_status.in_warning_state) {
++            *state = CAN_STATE_ERROR_WARNING;
++        } else if (protocol_status.in_error_passive_state) {
++            *state = CAN_STATE_ERROR_PASSIVE;
++        } else {
++            *state = CAN_STATE_ERROR_ACTIVE;
+         }
+     }
+ 
+     if (err_cnt != NULL) {
++        mcan_error_count_t error_count;
++        mcan_get_error_counter(can, &error_count);
+         err_cnt->tx_err_cnt = error_count.transmit_error_count;
+         err_cnt->rx_err_cnt = error_count.receive_error_count;
+     }
+@@ -919,6 +916,7 @@ static int hpm_mcan_set_timing_data(const struct device *dev, const struct can_t
+     config ->baudrate_fd = bitrate;
+ 
+     uint32_t can_clk_freq = clock_get_frequency(cfg->clock_name);
++           dev->name, can_clk_freq, config->baudrate, (unsigned int)can->NBTP, (unsigned int)can->TDCR);
+     hpm_stat_t status = mcan_init(can, config, can_clk_freq);
+ 
+     if (status != status_success) {
+@@ -1037,7 +1035,7 @@ static const struct can_driver_api hpm_mcan_driver_api = {
+         static void hpm_mcan_irq_config_func##n(const struct device *dev); \
+     \
+     static const struct hpm_mcan_config hpm_mcan_cfg_##n = { \
+-        .common = CAN_DT_DRIVER_CONFIG_INST_GET(inst, 0, 1000000), \
++        .common = CAN_DT_DRIVER_CONFIG_INST_GET(n, 0, 1000000), \
+         .base = (MCAN_Type*)DT_INST_REG_ADDR(n), \
+         .clock_name = (clock_name_t)DT_INST_PROP(n, clk_name), \
+         .clock_src = (clk_src_t)DT_INST_PROP(n, clk_source), \

@@ -1,0 +1,15 @@
+diff --git a/osal/usb_osal_zephyr.c b/osal/usb_osal_zephyr.c
+index fe2dc641..1ad0a53c 100644
+--- a/osal/usb_osal_zephyr.c
++++ b/osal/usb_osal_zephyr.c
+@@ -8,6 +8,10 @@
+ #include "usb_config.h"
+ #include "usb_log.h"
+ 
++#ifdef ARRAY_SIZE
++#undef ARRAY_SIZE
++#endif
++
+ #include <version.h>
+ #if (KERNELVERSION >= 0x3020000)
+ #include <zephyr/kernel.h>

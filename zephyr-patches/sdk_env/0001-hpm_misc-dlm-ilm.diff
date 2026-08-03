@@ -1,0 +1,27 @@
+diff --git a/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h b/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h
+index 367c6113..ae51e16d 100644
+--- a/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h
++++ b/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h
+@@ -38,6 +38,12 @@
+ static inline uint32_t core_local_mem_to_sys_address(uint8_t core_id, uint32_t addr)
+ {
+     (void) core_id;
++    if (ADDRESS_IN_DLM(addr)) {
++        return DLM_TO_SYSTEM(addr);
++    }
++    if (ADDRESS_IN_ILM(addr)) {
++        return ILM_TO_SYSTEM(addr);
++    }
+     return addr;
+ }
+ 
+@@ -45,6 +51,9 @@ static inline uint32_t core_local_mem_to_sys_address(uint8_t core_id, uint32_t a
+ static inline uint32_t sys_address_to_core_local_mem(uint8_t core_id, uint32_t addr)
+ {
+     (void) core_id;
++    if (ADDRESS_IN_CORE0_DLM_SYSTEM(addr)) {
++        return SYSTEM_TO_DLM(addr);
++    }
+     return addr;
+ }
+ #endif /* HPM_MISC_H */

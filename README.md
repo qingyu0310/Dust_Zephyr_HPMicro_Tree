@@ -1,7 +1,7 @@
 # sdk_glue_user — HPM 侧用户自研层（与 sdk_glue 同级的小树）
 
 > **SELF-MAINTAINED — qingyu**
-> 这是与 sdk_glue / sdk_env 同级的用户自研层（`<workspace>/sdk_glue_user`，workspace 如 `E:\Zephyr_HPMicro_Test`），
+> 这是与 sdk_glue / sdk_env 同级的用户自研层（`<workspace>/sdk_glue_user`，workspace 如 `E:\Zephyr_HPMicro`），
 > 结构镜像 sdk_glue（`boards/`、`soc/`、`dts/`…），只包含用户自研/移植的**独立新增文件**，**独立 git 仓库管理**。
 >
 > **不污染官方 sdk**：sdk_glue / sdk_env 官方仓库保持干净，这里只放"新增独立文件"。
@@ -43,6 +43,20 @@ list(APPEND DTS_ROOT   "<workspace>/sdk_glue_user/dts")
 - 本目录是**独立 git 仓库**（`sdk_glue_user/.git`）。
 - 新增板卡/SoC/binding 在本目录内 `git add` / `git commit`，`git push` 到用户自己的远端仓库。
 - 与 sdk_glue / sdk_env 完全独立，官方仓库 git 不受影响。
+
+## 底层修改 patch 机制
+
+修改官方仓库的部分（不污染官方 sdk）归档在 `zephyr-patches/`，构建时 apply：
+
+- `zephyr/`   → zephyr 官方树（intc_plic.c PLIC 伪中断）
+- `sdk_env/`  → HPM sdk_env（hpm_misc.h DLM/ILM 地址换算）
+- `sdk_glue/` → HPM sdk_glue（UART RX idle / CAN / GPIO / USB / dts / soc-boards 共 34 文件）
+- `cherryusb/`→ CherryUSB（usb_osal_zephyr.c ARRAY_SIZE 宏冲突）
+
+用法（Linux / CI）：`./apply-patches.sh --zephyr <zephyr> --sdk-env <sdk_env> --sdk-glue <sdk_glue> --cherryusb <cherryusb>`
+用法（Windows）：`.\apply-patches.ps1 -Zephyr ... -SdkEnv ... -SdkGlue ... -CherryUsb ...`
+
+重新生成 patch：改完官方仓库后 `git diff > zephyr-patches/<repo>/NNN-<desc>.diff` 更新对应文件。
 
 ## 备注
 

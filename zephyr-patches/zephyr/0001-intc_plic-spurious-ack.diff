@@ -1,0 +1,29 @@
+diff --git a/drivers/interrupt_controller/intc_plic.c b/drivers/interrupt_controller/intc_plic.c
+index 606bcb39..4dc92021 100644
+--- a/drivers/interrupt_controller/intc_plic.c
++++ b/drivers/interrupt_controller/intc_plic.c
+@@ -23,7 +23,6 @@
+ #include <zephyr/device.h>
+ #include <zephyr/devicetree/interrupt_controller.h>
+ #include <zephyr/shell/shell.h>
+-
+ #include <zephyr/sw_isr_table.h>
+ #include <zephyr/drivers/interrupt_controller/riscv_plic.h>
+ #include <zephyr/irq.h>
+@@ -550,6 +549,16 @@ static void plic_irq_handler(const struct device *dev)
+ 
+ 	/* Call the corresponding IRQ handler in _sw_isr_table */
+ 	ite = &config->isr_table[local_irq];
++	if (ite->isr == z_irq_spurious) {
++#ifdef CONFIG_PLIC_SUPPORTS_TRIG_EDGE
++		if (trig_val == PLIC_TRIG_LEVEL) {
++			sys_write32(local_irq, claim_complete_addr);
++		}
++#else
++		sys_write32(local_irq, claim_complete_addr);
++#endif
++		return;
++	}
+ 	ite->isr(ite->arg);
+ 
+ 	/*
