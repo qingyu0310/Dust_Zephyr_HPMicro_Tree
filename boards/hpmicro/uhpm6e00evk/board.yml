@@ -1,0 +1,6 @@
+board:
+  name: uhpm6e00evk
+  full_name: HPMicro HPM6E00EVK (user)
+  vendor: hpmicro
+  socs:
+    - name: hpm6e80

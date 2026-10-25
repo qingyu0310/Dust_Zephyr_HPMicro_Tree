@@ -1,0 +1,14 @@
+# execute in place support
+CONFIG_XIP=y
+
+# pinctrl driver option
+CONFIG_PINCTRL=y
+
+# Nocache options, place in RAM region
+CONFIG_NOCACHE_MEMORY=y
+
+CONFIG_FLASH=y
+
+# D-Cache 关闭：DMA 收发缓冲与 CPU 之间没有 cache 维护，
+# 开启后 TX 数据留在 cache 未写回，DMA 读到全 0（与 hpm5361icb 一致）
+CONFIG_DCACHE=n

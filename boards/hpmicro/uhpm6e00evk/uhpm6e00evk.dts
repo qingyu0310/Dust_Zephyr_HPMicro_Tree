@@ -1,0 +1,124 @@
+/*
+ * Copyright 2025 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <hpmicro/hpm6e80.dtsi>
+#include "uhpm6e00evk-pinctrl.dtsi"
+
+/ {
+	model = "HPMicro HPM6E00EVK";
+	compatible = "HPMicro,uhpm6e00evk";
+
+	chosen {
+		zephyr,sram = &sram;
+		zephyr,flash = &flash0;
+		zephyr,itcm = &ilm;
+		zephyr,dtcm = &dlm;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,flash-controller = &xpi0;
+	};
+
+	dram: memory@40000000 {
+		device_type = "memory";
+		reg = <0x40000000 DT_SIZE_M(32)>;
+	};
+};
+
+/* Zephyr 机器定时器需要 riscv,machine-timer 这一级的 compatible */
+&mtimer {
+	compatible = "riscv,machine-timer", "andestech,machine-timer";
+	reg-names = "mtime", "mtimecmp";
+};
+
+&uart0 {
+	status = "disabled";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart0>;
+	pinctrl-names = "default";
+	uart-idle-trgm-reg = <0xF022C000>;
+	uart-idle-trgm-pin = <115>;
+	uart-idle-trgm-input-src = <0x0B>;
+	uart-idle-trgm-output-gptmr-in = <0x38>;
+	uart-idle-trgm-output-gptmr-sync = <0x37>;
+	uart-idle-gptmr-reg = <0xF3010000>;
+	uart-idle-gptmr-clock-name = <18743311>;
+	dmas = <&hdma 0 8>, <&hdma 1 9>;
+	dma-names = "rx", "tx";
+};
+
+&hdma {
+	status = "disabled";
+};
+
+&xdma {
+	status = "disabled";
+};
+
+&gpioa {
+	status = "okay";
+};
+
+&gpiob {
+	status = "okay";
+};
+
+&gpioe {
+	status = "okay";
+};
+
+&gpioy {
+	status = "okay";
+};
+
+&gpioz {
+	status = "okay";
+};
+
+&xpi0 {
+	status = "okay";
+
+	flash0: flash@0 {
+		compatible = "hpmicro,hpmicro-flash", "soc-nv-flash";
+		reg = <0x80000000 DT_SIZE_M(16)>;
+		status = "okay";
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+		nor-cfg-opt-hdr = <0xfcf90001>;
+		nor-cfg-opt-opt0 = <0x05>;
+		nor-cfg-opt-opt1 = <0x1000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			boot_partition: partition@0 {
+				label = "mcuboot";
+				reg = <0x3000 0x40000>;
+			};
+
+			slot0_partition: partition@43000 {
+				label = "image-0";
+				reg = <0x43000 DT_SIZE_K(1536)>;
+			};
+
+			slot1_partition: partition@1c3000 {
+				label = "image-1";
+				reg = <0x1c3000 DT_SIZE_K(1536)>;
+			};
+
+			scratch_partition: partition@343000 {
+				label = "image-scratch";
+				reg = <0x343000 DT_SIZE_K(128)>;
+			};
+
+			storage_partition: partition@363000 {
+				label = "storage";
+				reg = <0x363000 DT_SIZE_K(128)>;
+			};
+		};
+	};
+};
