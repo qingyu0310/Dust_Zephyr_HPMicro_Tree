@@ -1,0 +1,11 @@
+# Copyright 2025 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_HPM5E31GN1
+
+config INIT_EXT_RAM
+	bool "Initialize external RAM(SDRAM or DDR)"
+	default n
+
+endif
+

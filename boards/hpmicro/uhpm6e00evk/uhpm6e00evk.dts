@@ -21,6 +21,37 @@
 		zephyr,flash-controller = &xpi0;
 	};
 
+
+	aliases {
+		ethercat0 = &esc0;
+	};
+
+	/**
+	 * EtherCAT 从站控制器（片内 ESC）
+	 * 依据 HPM6E00EVK RevA 原理图 ETHERCAT_A.kicad_sch：
+	 *   - PHY U11 = JL1111-N032I（MII），PORTA Address is 00，PORTA is ECAT IN
+	 *   - U12 = CAT24C128 EEPROM（ESC 的 I2C EEPROM）
+	 * 中断号取自 hpm_soc_irq.h：ESC=133 / SYNC0=134 / SYNC1=135 / RESET=136
+	 */
+	esc0: ethercat@f1700000 {
+		compatible = "hpmicro,hpm-esc";
+		reg = <0xf1700000 0x10000>;
+		interrupt-parent = <&plic>;
+		interrupts = <133 2>, <134 3>, <135 3>, <136 2>;
+		interrupt-names = "pdi", "sync0", "sync1", "reset";
+		clocks = <&clk CLOCK_ESC0>;
+		pinctrl-0 = <&pinmux_esc0>;
+		pinctrl-names = "default";
+		/* PORTA_RESET：原理图 R81 10K 上拉 + C63 0.1uF；MCU 侧引脚为 PA10 */
+		phy-reset-gpios = <&gpioa 10 GPIO_ACTIVE_LOW>;
+		phy-addr-offset = <0>;
+		/* PORTA Address is 00 → link0 控制索引对应 ESC0_CTR_3（PA15） */
+		link0-ctrl-index = <3>;
+		software-link0;
+		port1-enabled;
+		status = "okay";
+	};
+
 	dram: memory@40000000 {
 		device_type = "memory";
 		reg = <0x40000000 DT_SIZE_M(32)>;

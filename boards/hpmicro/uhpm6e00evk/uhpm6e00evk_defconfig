@@ -9,6 +9,8 @@ CONFIG_NOCACHE_MEMORY=y
 
 CONFIG_FLASH=y
 
-# D-Cache 关闭：DMA 收发缓冲与 CPU 之间没有 cache 维护，
-# 开启后 TX 数据留在 cache 未写回，DMA 读到全 0（与 hpm5361icb 一致）
+# D-Cache 关闭：PMA 与 PMP stack guard 抢寄存器，且 DMA 缓冲无 cache 维护
 CONFIG_DCACHE=n
+
+# EtherCAT 从站控制器（片内 ESC）
+CONFIG_HPM_ESC=y

@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro EtherCAT slave controller
+
+compatible: "hpmicro,hpm-esc"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+  interrupts:
+    required: true
+  interrupt-names:
+    required: true
+  clocks:
+    required: true
+  phy-reset-gpios:
+    type: phandle-array
+    description: Active-low reset for the EtherCAT PHY.
+  phy-addr-offset:
+    type: int
+    default: 0
+    description: Address offset programmed into the ESC PHY management block.
+  link0-ctrl-index:
+    type: int
+    default: 0
+  link1-ctrl-index:
+    type: int
+    default: 0
+  link2-ctrl-index:
+    type: int
+    default: 0
+  port1-enabled:
+    type: boolean
+  port2-enabled:
+    type: boolean
+  port0-disabled:
+    type: boolean
+    description: Do not expose ESC port 0 when the board has no port 0 PHY.
+  software-link0:
+    type: boolean
+    description: Use the GPR link state for port 0 instead of a dedicated LINK pin.
+  software-link1:
+    type: boolean
+    description: Use the GPR link state for port 1 instead of a dedicated LINK pin.
+  link0-invert:
+    type: boolean
+  link1-invert:
+    type: boolean
+  link2-invert:
+    type: boolean
+  run-error-leds:
+    type: boolean
+  run-led-ctrl-index:
+    type: int
+    default: 0
+  error-led-ctrl-index:
+    type: int
+    default: 0

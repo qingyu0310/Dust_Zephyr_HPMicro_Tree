@@ -43,6 +43,7 @@ apply_one "$SDK_GLUE"  "$PATCHES/sdk_glue/0004-drivers-usb-udc-cherryusb.diff"
 apply_one "$SDK_GLUE"  "$PATCHES/sdk_glue/0005-drivers-others.diff"
 apply_one "$SDK_GLUE"  "$PATCHES/sdk_glue/0006-dts-hpm53xx-osc-clocks.diff"
 apply_one "$SDK_GLUE"  "$PATCHES/sdk_glue/0007-soc-boards.diff"
+apply_one "$SDK_GLUE"  "$PATCHES/sdk_glue/0008-soc-hpm5e31-wiring.diff"
 
 apply_one "$CHERRYUSB" "$PATCHES/cherryusb/0001-usb_osal-array_size.diff"
 

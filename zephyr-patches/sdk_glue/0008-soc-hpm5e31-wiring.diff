@@ -1,0 +1,41 @@
+--- a/soc/hpmicro/Kconfig
++++ b/soc/hpmicro/Kconfig
+@@ -62,3 +62,4 @@
+ 
+ endif # BOOTLOADER_MCUBOOT
+ endif # SOC_FAMILY_HPM
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig"
+--- a/soc/hpmicro/Kconfig.soc
++++ b/soc/hpmicro/Kconfig.soc
+@@ -10,3 +10,4 @@
+ source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig.soc"
+ # SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
+ source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300/Kconfig.soc"
++source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig.soc"
+--- a/soc/hpmicro/Kconfig.defconfig
++++ b/soc/hpmicro/Kconfig.defconfig
+@@ -22,3 +22,4 @@
+     default y
+ 
+ endif
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig.defconfig.series"
+--- a/soc/hpmicro/CMakeLists.txt
++++ b/soc/hpmicro/CMakeLists.txt
+@@ -5,6 +5,8 @@
+ if(SOC_SERIES STREQUAL "HPM5300")
+ 	# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
+ 	add_subdirectory(${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300 ${CMAKE_CURRENT_BINARY_DIR}/HPM5300)
++elseif(SOC_SERIES STREQUAL "HPM5E00")
++	add_subdirectory(${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00 ${CMAKE_CURRENT_BINARY_DIR}/HPM5E00)
+ else()
+ 	add_subdirectory(${SOC_SERIES})
+ endif()
+--- a/soc/hpmicro/soc.yml
++++ b/soc/hpmicro/soc.yml
+@@ -32,3 +32,6 @@
+     - name: hpm6e80
+     - name: hpm6e8y
+ 
++  - name: hpm5e00
++    socs:
++    - name: hpm5e31

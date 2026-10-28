@@ -1,0 +1,8 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Hpmicro Zephyr Glue (user)"
+
+rsource "drivers/Kconfig"
+
+endmenu

@@ -1,0 +1,4 @@
+name: sdk_glue_user
+build:
+  cmake: .
+  kconfig: Kconfig.hpm

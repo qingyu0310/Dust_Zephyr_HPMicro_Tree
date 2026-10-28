@@ -1,0 +1,17 @@
+# Copyright 2025 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+identifier: hpm5e31gn1
+name: HPMicro HPM5E31 GN1
+type: mcu
+arch: riscv32
+toolchain:
+  - zephyr
+  - cross-compile
+ram: 128
+flash: 1024
+supported:
+  - uart
+  - mcan
+vendor: hpmicro
+

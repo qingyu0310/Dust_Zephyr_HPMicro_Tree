@@ -1,0 +1,7 @@
+board:
+  name: hpm5e31gn1
+  full_name: HPMicro HPM5E31 GN1
+  vendor: hpmicro
+  socs:
+    - name: hpm5e31
+

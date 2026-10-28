@@ -33,6 +33,7 @@ Apply-One $SdkGlue   (Join-Path $Patches "sdk_glue/0004-drivers-usb-udc-cherryus
 Apply-One $SdkGlue   (Join-Path $Patches "sdk_glue/0005-drivers-others.diff")
 Apply-One $SdkGlue   (Join-Path $Patches "sdk_glue/0006-dts-hpm53xx-osc-clocks.diff")
 Apply-One $SdkGlue   (Join-Path $Patches "sdk_glue/0007-soc-boards.diff")
+Apply-One $SdkGlue (Join-Path $Patches "sdk_glue/0008-soc-hpm5e31-wiring.diff")
 Apply-One $CherryUsb (Join-Path $Patches "cherryusb/0001-usb_osal-array_size.diff")
 
 Write-Host "全部 10 个 patch 应用成功。"

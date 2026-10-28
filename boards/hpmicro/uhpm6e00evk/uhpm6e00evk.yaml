@@ -22,6 +22,7 @@ supported:
   - usbd
   - cherryusb
   - enet
+  - ethercat
 testing:
   ignore_tags:
     - bluetooth
