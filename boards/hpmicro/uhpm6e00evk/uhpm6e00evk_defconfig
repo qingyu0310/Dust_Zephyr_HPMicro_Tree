@@ -13,4 +13,3 @@ CONFIG_FLASH=y
 CONFIG_DCACHE=n
 
 # EtherCAT 从站控制器（片内 ESC）
-CONFIG_HPM_ESC=y

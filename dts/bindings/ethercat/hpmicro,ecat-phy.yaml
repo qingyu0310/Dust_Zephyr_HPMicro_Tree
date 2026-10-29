@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  EtherCAT PHY attached to the HPMicro ESC MDIO bus.
+
+  PHY 驱动的全部可配项都在这里声明，板卡只在 dts 里填值。
+  各芯片的 binding 继承本文件，只追加自己的私有属性。
+
+compatible: "hpmicro,ecat-phy"
+
+include: base.yaml
+
+properties:
+  mdio-address:
+    type: int
+    required: true
+    description: PHY address on the ESC MDIO bus
+
+  phy-mode:
+    type: string
+    enum:
+      - "mii"
+      - "rmii"
+      - "rgmii"
+    default: "mii"
+    description: Host interface mode between ESC and this PHY
+
+  autoneg:
+    type: boolean
+    description: |
+      Enable auto-negotiation. When absent, the PHY is forced to
+      `speed` / `duplex` instead.
+
+  advertise:
+    type: int
+    default: 0x0100
+    description: |
+      Clause-22 ANAR advertisement bits, only meaningful with `autoneg`.
+      bit8 = 100BASE-TX full duplex, bit7 = 100BASE-TX half,
+      bit6 = 10BASE-T full, bit5 = 10BASE-T half, bit0 = 802.3 selector.
+
+  speed:
+    type: string
+    enum:
+      - "10"
+      - "100"
+      - "1000"
+    default: "100"
+    description: Forced speed, only used when `autoneg` is absent
+
+  duplex:
+    type: string
+    enum:
+      - "half"
+      - "full"
+    default: "full"
+    description: Forced duplex, only used when `autoneg` is absent
+
+  led-mode:
+    type: int
+    default: 0
+    description: Chip-private LED mode value (0 = driver default)

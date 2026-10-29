@@ -22,6 +22,12 @@ properties:
     type: int
     default: 0
     description: Address offset programmed into the ESC PHY management block.
+  phys:
+    type: phandles
+    description: |
+      PHYs attached to ESC port 0..n, in port order.
+      Each phandle points to a node whose compatible selects the PHY driver
+      (hpmicro,ecat-phy-jl1111 / -rtl8201f / -tja1101b).
   link0-ctrl-index:
     type: int
     default: 0

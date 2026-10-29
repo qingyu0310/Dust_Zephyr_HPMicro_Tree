@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  TJA1101B 100BASE-T1 EtherCAT PHY (automotive single-pair Ethernet).
+
+  板卡 dts 写法：
+    ecat_phy1: ethercat-phy@0 {
+        compatible = "hpmicro,ecat-phy-tja1101b";
+        mdio-address = <0>;
+        phy-mode = "mii";
+        master-slave = "auto";
+    };
+
+compatible: "hpmicro,ecat-phy-tja1101b"
+
+include: "hpmicro,ecat-phy.yaml"
+
+properties:
+  master-slave:
+    type: string
+    enum:
+      - "auto"
+      - "master"
+      - "slave"
+    default: "auto"
+    description: |
+      100BASE-T1 master/slave role. "auto" leaves the reset default
+      (auto-negotiated with the link partner).

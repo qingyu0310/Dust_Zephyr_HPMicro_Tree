@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  JL1111 100BASE-TX EtherCAT PHY.
+
+  板卡 dts 写法：
+    ecat_phy0: ethercat-phy@0 {
+        compatible = "hpmicro,ecat-phy-jl1111";
+        mdio-address = <0>;
+        phy-mode = "mii";
+        autoneg;
+        advertise = <0x0100>;
+    };
+
+compatible: "hpmicro,ecat-phy-jl1111"
+
+include: "hpmicro,ecat-phy.yaml"

@@ -39,17 +39,47 @@
 		interrupt-parent = <&plic>;
 		interrupts = <133 2>, <134 3>, <135 3>, <136 2>;
 		interrupt-names = "pdi", "sync0", "sync1", "reset";
-		clocks = <&clk CLOCK_ESC0>;
-		pinctrl-0 = <&pinmux_esc0>;
+		/* clk 是 #clock-cells=<3>：name/src/div。
+		 * ESC0 在 SDK 里只做 clock_add_to_group，不切源不分频，
+		 * 这里给 CLK_SRC_GROUP_AXIN(8) 且 div=1，与复位默认一致。 */
+		clocks = <&clk CLOCK_ESC0 8 1>;
+		/* Zephyr 只内建 default/sleep 两个状态名，自定义状态名要驱动自己
+		 * 定义 PINCTRL_STATE_* 并 apply，esc_hpmicro.c 只 apply default。
+		 * 所以 ESC 本体和数字 IO 都挂在 pinctrl-0 里，一次配完。 */
+		pinctrl-0 = <&pinmux_esc0 &pinmux_ecat_io>;
 		pinctrl-names = "default";
 		/* PORTA_RESET：原理图 R81 10K 上拉 + C63 0.1uF；MCU 侧引脚为 PA10 */
 		phy-reset-gpios = <&gpioa 10 GPIO_ACTIVE_LOW>;
 		phy-addr-offset = <0>;
-		/* PORTA Address is 00 → link0 控制索引对应 ESC0_CTR_3（PA15） */
+		/* PORTA Address is 00；PORTA_LINK = PA15 → ESC0_CTR_3 */
 		link0-ctrl-index = <3>;
+		/* PORTB_LINK = PA11 → ESC0_CTR_0 */
+		link1-ctrl-index = <0>;
 		software-link0;
+		software-link1;
 		port1-enabled;
+		/* 两颗 PHY 都是 JL1111（MII）；驱动由各自的 compatible 选中 */
+		phys = <&ecat_phy0 &ecat_phy1>;
 		status = "okay";
+	};
+
+	/* EtherCAT PHY：PORTA @MDIO0，PORTB @MDIO1（依据 hpm_sdk hpm6e00evk board.h） */
+	ecat_phy0: ethercat-phy-0 {
+		compatible = "hpmicro,ecat-phy-jl1111";
+		mdio-address = <0>;
+		phy-mode = "mii";
+		autoneg;
+		advertise = <0x0100>;      /* 只通告 100BASE-TX 全双工 */
+		led-mode = <0>;
+	};
+
+	ecat_phy1: ethercat-phy-1 {
+		compatible = "hpmicro,ecat-phy-jl1111";
+		mdio-address = <1>;
+		phy-mode = "mii";
+		autoneg;
+		advertise = <0x0100>;
+		led-mode = <0>;
 	};
 
 	dram: memory@40000000 {
@@ -90,6 +120,14 @@
 
 &gpioa {
 	status = "okay";
+};
+
+/* ESC EEPROM 预烧通道（CAT24C128 挂在 I2C1，地址 0x50） */
+&i2c1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_i2c1_eeprom>;
+	pinctrl-names = "default";
+	clock-frequency = <100000>;
 };
 
 &gpiob {
@@ -149,6 +187,12 @@
 			storage_partition: partition@363000 {
 				label = "storage";
 				reg = <0x363000 DT_SIZE_K(128)>;
+			};
+
+			/* ESC SII 固件模拟 EEPROM：FLASH_EEPROM_SIZE = 0x10000 */
+			ethercat_eeprom_partition: partition@383000 {
+				label = "ethercat-eeprom";
+				reg = <0x383000 DT_SIZE_K(64)>;
 			};
 		};
 	};
