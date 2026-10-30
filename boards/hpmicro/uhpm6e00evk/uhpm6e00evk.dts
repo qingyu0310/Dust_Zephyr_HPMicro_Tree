@@ -58,28 +58,7 @@
 		software-link0;
 		software-link1;
 		port1-enabled;
-		/* 两颗 PHY 都是 JL1111（MII）；驱动由各自的 compatible 选中 */
-		phys = <&ecat_phy0 &ecat_phy1>;
 		status = "okay";
-	};
-
-	/* EtherCAT PHY：PORTA @MDIO0，PORTB @MDIO1（依据 hpm_sdk hpm6e00evk board.h） */
-	ecat_phy0: ethercat-phy-0 {
-		compatible = "hpmicro,ecat-phy-jl1111";
-		mdio-address = <0>;
-		phy-mode = "mii";
-		autoneg;
-		advertise = <0x0100>;      /* 只通告 100BASE-TX 全双工 */
-		led-mode = <0>;
-	};
-
-	ecat_phy1: ethercat-phy-1 {
-		compatible = "hpmicro,ecat-phy-jl1111";
-		mdio-address = <1>;
-		phy-mode = "mii";
-		autoneg;
-		advertise = <0x0100>;
-		led-mode = <0>;
 	};
 
 	dram: memory@40000000 {

@@ -1,5 +1,7 @@
 # Copyright (c) 2026
 # SPDX-License-Identifier: Apache-2.0
 
-# 本目录已无驱动：EtherCAT 的 HAL 与 PHY 驱动在 2026-10-29 下沉到
-# zephyr_user/drivers/ethercat/（照 USB 分层的做法，sdk_glue_user 只放 board/soc/dts）。
+# 厂商 C 代码：EtherCAT 的 Zephyr 设备驱动与 SII Flash 模拟。
+# C++ 适配层（EcatEsc / EcatSii 的实现）在 zephyr_user/drivers/ethercat/hal/。
+
+add_subdirectory_ifdef(CONFIG_DUST_ECAT_HAL_HPM ethercat)

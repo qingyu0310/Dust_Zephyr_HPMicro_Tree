@@ -1,0 +1,4 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+# 厂商 C 代码，由 zephyr_user/drivers/Kconfig 的 DUST_ECAT_HAL_HPM select。
