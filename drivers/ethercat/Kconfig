@@ -2,3 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # 厂商 C 代码，由 zephyr_user/drivers/Kconfig 的 DUST_ECAT_HAL_HPM select。
+
+# HPMicro 片内 ESC 设备驱动（esc_hpmicro.c）
+config HPM_ESC
+    bool "HPMicro on-chip EtherCAT slave controller"
+    default n
+    depends on DT_HAS_HPMICRO_HPM_ESC_ENABLED
+    help
+      HPMicro 片内 ESC 的 Zephyr 设备驱动：寄存器读写、MDIO、中断、PHY 复位、
+      EEPROM 模式配置。由 DUST_ECAT_HAL_HPM 或业务门禁 select。

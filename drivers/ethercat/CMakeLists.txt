@@ -16,8 +16,8 @@ zephyr_library_include_directories(
     include
 )
 
-# SII Flash 模拟依赖的 HPM SDK 组件
-zephyr_library_sources_ifdef(CONFIG_HPM_ESC_EEPROM_EMULATION
+# SII Flash 模拟依赖的 HPM SDK 组件（由 DUST_ECAT_EEPROM_EMULATION 决定是否编入）
+zephyr_library_sources_ifdef(CONFIG_DUST_ECAT_SII_FLASH
     ${HPM_SDK_DIR}/components/eeprom_emulation/eeprom_emulation.c
 )
 
