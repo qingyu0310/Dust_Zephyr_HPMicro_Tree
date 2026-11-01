@@ -32,9 +32,10 @@
 /* ESC 的 MDIO 地址偏移（由 dts 的 phy-addr-offset 给） */
 #define BOARD_ECAT_PHY_ADDR_OFFSET DT_PROP(DT_NODELABEL(esc0), phy_addr_offset)
 
-/* 板上 I2C EEPROM（CAT24C128）：仅 CONFIG_HPM_ESC_EEPROM_EMULATION=n 时使用。
- * 这是 ESC 自己的 I2C 通道，与 PHY 无关。 */
-#if !defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+/* 板上 I2C EEPROM（CAT24C128）：仅 SII 用板载 EEPROM 时使用。
+ * 这是 ESC 自己的 I2C 通道，与 PHY 无关。
+ * ESC_EEPROM_EMULATION 由 ecat_config.h 按 Kconfig 定义，1=Flash 模拟，0=板载 EEPROM。 */
+#if defined(ESC_EEPROM_EMULATION) && !ESC_EEPROM_EMULATION
 #include "hpm_i2c_drv.h"
 #include "hpm_iomux.h"
 
@@ -65,7 +66,7 @@ static inline void init_esc_eeprom_as_i2c_pin(void)
 	HPM_IOC->PAD[IOC_PAD_PA13].PAD_CTL =
 		IOC_PAD_PAD_CTL_PE_SET(1) | IOC_PAD_PAD_CTL_PS_SET(1) | IOC_PAD_PAD_CTL_OD_SET(1);
 }
-#endif /* !CONFIG_HPM_ESC_EEPROM_EMULATION */
+#endif /* CONFIG_DUST_ECAT_SII_EEPROM */
 
 /* busy-wait delay, usable in ISR context */
 static inline void board_delay_ms(uint32_t ms)

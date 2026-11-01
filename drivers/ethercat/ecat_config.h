@@ -10,6 +10,14 @@
 
 #include "ecat_port_hw.h"
 
+/* SII 介质：1=Flash 分区模拟，0=板载 I2C EEPROM。
+ * SSC 原生宏名，ecat_e2p_emulation.c 与 ecat_port_hw.h 共用这一个开关。 */
+#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+#define ESC_EEPROM_EMULATION (1)
+#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
+#define ESC_EEPROM_EMULATION (0)
+#endif
+
 #define FLASH_SECTOR_SIZE        (0x1000U) /* 4096 */
 
 /* Please allocate appropriate flash space for FLASH EEPROM to avoid conflicts with other flash content */

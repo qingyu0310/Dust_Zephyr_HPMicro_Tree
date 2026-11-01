@@ -13,13 +13,16 @@
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/irq.h>
 
+#include "hpm_esc_drv.h"
+#include "hpm_esc_regs.h"
+
 #if !defined(ESC_EEPROM_EMULATION) || (!ESC_EEPROM_EMULATION)
 #include "ecat_port_hw.h"
 #include "hpm_i2c_drv.h"
 #endif
 
-/* SII 初始数据，由 SSC 工具生成；未提供时用弱定义占位 */
-__attribute__((weak)) unsigned char aEepromData[ESC_EEPROM_SIZE] = {0xa5, 0xa5, 0xa5, 0xa5};
+/* SII 初始数据，由 SSC 工具生成 */
+#include "eeprom.h"
 
 /**
  * @brief 计算 EEPROM 配置区校验值
@@ -154,48 +157,51 @@ hpm_stat_t ecat_flash_eeprom_init(void)
         return status_fail;
     }
 
-    /* If the value of aEepromData is the initial value in weak declaration, it means there is no valid data in aEepromData */
+    /* If the value of aEepromData is the initial value in weak declaration, it means there is no valid data in aEepromData.
+     * 没有 SII 数据就跳过整片初始化与读校验：否则下面 256 次 Flash 读失败 + 擦写在 irq_lock 内跑，
+     * 中断被关死，表现为启动卡住。 */
     if ((aEepromData[0] == 0xa5) && (aEepromData[1] == 0xa5) && (aEepromData[2] == 0xa5) && (aEepromData[3] == 0xa5)) {
         ECAT_LOG("No EEPROM content in PROGRAM.\n");
+        return status_success;
     } else {
         bool require_init_eeprom = false;
         stat = ecat_flash_eeprom_check_configuration_area();
         if (status_success == stat) {
             /* if eeprom configuration data checksum pass, then check Product Code and Revision Number */
-#if defined(ECAT_EEPROM_CHECK_PRODUCT_CODE_AND_REVISION) && ECAT_EEPROM_CHECK_PRODUCT_CODE_AND_REVISION
-            uint32_t product_code, revision_num;
-            uint16_t product_code_low, product_code_high, revision_num_low, revision_num_high;
-            stat = e2p_read(ESC_EEPROM_PRODUCT_CODE_WORD_INDEX, EEPROM_WRITE_SIZE, (uint8_t *)&product_code_low);
-            if (stat != E2P_STATUS_OK) {
-                ECAT_LOG("Read Product Code in EEPROM failed.\n");
-                return status_fail;
-            }
+			#if defined(ECAT_EEPROM_CHECK_PRODUCT_CODE_AND_REVISION) && ECAT_EEPROM_CHECK_PRODUCT_CODE_AND_REVISION
+				uint32_t product_code, revision_num;
+				uint16_t product_code_low, product_code_high, revision_num_low, revision_num_high;
+				stat = e2p_read(ESC_EEPROM_PRODUCT_CODE_WORD_INDEX, EEPROM_WRITE_SIZE, (uint8_t *)&product_code_low);
+				if (stat != E2P_STATUS_OK) {
+					ECAT_LOG("Read Product Code in EEPROM failed.\n");
+					return status_fail;
+				}
 
-            stat = e2p_read(ESC_EEPROM_PRODUCT_CODE_WORD_INDEX + 1, EEPROM_WRITE_SIZE, (uint8_t *)&product_code_high);
-            if (stat != E2P_STATUS_OK) {
-                ECAT_LOG("Read Product Code in EEPROM failed.\n");
-                return status_fail;
-            }
-            product_code = (uint32_t)product_code_high << 16 | product_code_low;
+				stat = e2p_read(ESC_EEPROM_PRODUCT_CODE_WORD_INDEX + 1, EEPROM_WRITE_SIZE, (uint8_t *)&product_code_high);
+				if (stat != E2P_STATUS_OK) {
+					ECAT_LOG("Read Product Code in EEPROM failed.\n");
+					return status_fail;
+				}
+				product_code = (uint32_t)product_code_high << 16 | product_code_low;
 
-            stat = e2p_read(ESC_EEPROM_REVISION_NUM_WORD_INDEX, EEPROM_WRITE_SIZE, (uint8_t *)&revision_num_low);
-            if (stat != E2P_STATUS_OK) {
-                ECAT_LOG("Read Revision Number in EEPROM failed.\n");
-                return status_fail;
-            }
+				stat = e2p_read(ESC_EEPROM_REVISION_NUM_WORD_INDEX, EEPROM_WRITE_SIZE, (uint8_t *)&revision_num_low);
+				if (stat != E2P_STATUS_OK) {
+					ECAT_LOG("Read Revision Number in EEPROM failed.\n");
+					return status_fail;
+				}
 
-            stat = e2p_read(ESC_EEPROM_REVISION_NUM_WORD_INDEX + 1, EEPROM_WRITE_SIZE, (uint8_t *)&revision_num_high);
-            if (stat != E2P_STATUS_OK) {
-                ECAT_LOG("Read Revision Number in EEPROM failed.\n");
-                return status_fail;
-            }
-            revision_num = (uint32_t)revision_num_high << 16 | revision_num_low;
+				stat = e2p_read(ESC_EEPROM_REVISION_NUM_WORD_INDEX + 1, EEPROM_WRITE_SIZE, (uint8_t *)&revision_num_high);
+				if (stat != E2P_STATUS_OK) {
+					ECAT_LOG("Read Revision Number in EEPROM failed.\n");
+					return status_fail;
+				}
+				revision_num = (uint32_t)revision_num_high << 16 | revision_num_low;
 
-            /* if Procde Code not match or aEepromData[ESC_EEPROM_REVISION_NUM_WORD_INDEX] > stored revesion, require to update eeprom by aEepromData */
-            if ((product_code != ((uint32_t *)aEepromData)[ESC_EEPROM_PRODUCT_CODE_WORD_INDEX / 2]) || (revision_num < ((uint32_t *)aEepromData)[ESC_EEPROM_REVISION_NUM_WORD_INDEX / 2])) {
-                require_init_eeprom = true;
-            }
-#endif
+				/* if Procde Code not match or aEepromData[ESC_EEPROM_REVISION_NUM_WORD_INDEX] > stored revesion, require to update eeprom by aEepromData */
+				if ((product_code != ((uint32_t *)aEepromData)[ESC_EEPROM_PRODUCT_CODE_WORD_INDEX / 2]) || (revision_num < ((uint32_t *)aEepromData)[ESC_EEPROM_REVISION_NUM_WORD_INDEX / 2])) {
+					require_init_eeprom = true;
+				}
+			#endif
         } else {
             require_init_eeprom = true;
         }
@@ -281,6 +287,120 @@ void ecat_flash_eeprom_show_info(void)
 {
     e2p_show_info();
 }
+
+#if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
+
+/* ESC 每次 EEPROM 读命令的字数（SSC 里由 ESC 配置给出，16 位 EEPROM 固定 4 字节） */
+#define EEPROM_READ_SIZE (4)
+
+/**
+ * @brief 应答 ESC 的 EEPROM 读命令 — 从 Flash 取数据写入 ESC 数据寄存器
+ * @param wordaddr  字地址
+ * @return 0=成功，非 0=失败
+ */
+uint16_t ecat_eeprom_emulation_read(uint32_t wordaddr)
+{
+    uint16_t data[4] = {0};
+    uint64_t data_total = 0;
+
+    for (uint8_t i = 0; i < (EEPROM_READ_SIZE / EEPROM_WRITE_SIZE); i++) {
+        if (status_success != ecat_flash_eeprom_read(wordaddr + i, (uint8_t *)&data[i])) {
+            return ESC_EEPROM_EMULATION_ACK_ERROR;
+        }
+        data_total = data_total + (data[i] << (i * (EEPROM_WRITE_SIZE * 8)));
+    }
+
+    esc_write_eeprom_data(HPM_ESC, data_total);
+
+    return ESC_EEPROM_EMULATION_SUCCESS;
+}
+
+/**
+ * @brief 应答 ESC 的 EEPROM 写命令 — 从 ESC 数据寄存器取数据写入 Flash
+ * @param wordaddr  字地址
+ * @return 0=成功，非 0=失败
+ */
+uint16_t ecat_eeprom_emulation_write(uint32_t wordaddr)
+{
+    uint16_t data = (uint16_t)(esc_read_eeprom_data(HPM_ESC) & 0xFFFF);
+    uint16_t data_stored;
+
+    if ((status_success != ecat_flash_eeprom_read(wordaddr, (uint8_t *)&data_stored)) || (data != data_stored)) {
+        if (status_success != ecat_flash_eeprom_write(wordaddr, (uint8_t *)&data)) {
+            return ESC_EEPROM_EMULATION_ACK_ERROR;
+        }
+    }
+
+    return ESC_EEPROM_EMULATION_SUCCESS;
+}
+
+/**
+ * @brief 应答 ESC 的 EEPROM 重载命令 — 解析配置区并写入 ESC 寄存器
+ * @return 0=成功，1=应答错，2=校验错
+ */
+uint16_t ecat_eeprom_emulation_reload(void)
+{
+    uint16_t config_data[8] = {0xff};
+    uint32_t reload_data = 0;
+    hpm_stat_t stat = status_success;
+
+    for (uint8_t i = 0; i < 8; i++) {
+        stat = ecat_flash_eeprom_read(i, (uint8_t *)&config_data[i]);
+        if (status_success != stat) {
+            break;
+        }
+    }
+
+    if (status_success != stat) {
+        return ESC_EEPROM_EMULATION_ACK_ERROR;
+    }
+
+    uint8_t checksum = ecat_calculate_eeprom_config_data_checksum((uint8_t *)config_data, 14);
+
+    if (checksum != config_data[7]) {
+        return ESC_EEPROM_EMULATION_CHECKSUM_ERROR;
+    }
+
+    reload_data += config_data[4];
+    reload_data += ESC_ESC_CFG_ELDAP_GET(config_data[0] >> 8) << 16;
+    reload_data += ESC_ESC_CFG_ELP0_GET(config_data[0] >> 8) << 17;
+    reload_data += ESC_ESC_CFG_ELP1_GET(config_data[0] >> 8) << 18;
+    reload_data += ESC_ESC_CFG_ELP2_GET(config_data[0] >> 8) << 19;
+    reload_data += ESC_ESC_CFG_ELP3_GET(config_data[0] >> 8) << 20;
+
+    esc_write_eeprom_data(HPM_ESC, reload_data);
+
+    return ESC_EEPROM_EMULATION_SUCCESS;
+}
+
+/**
+ * @brief 应答 ESC 的 EEPROM 重载请求 — check_eeprom 忙等前必须调用一次
+ */
+void ecat_eeprom_emulation_reload_response(void)
+{
+    if ((HPM_ESC->EEPROM_CTRL_STAT & ESC_EEPROM_CTRL_STAT_EE_EMU_MASK) != ESC_EEPROM_CTRL_STAT_EE_EMU_MASK) {
+        return;
+    }
+    if ((HPM_ESC->EEPROM_CTRL_STAT & ESC_EEPROM_CTRL_STAT_BUSY_MASK) != ESC_EEPROM_CTRL_STAT_BUSY_MASK) {
+        return;
+    }
+
+    uint8_t cmd = esc_get_eeprom_cmd(HPM_ESC);
+
+    if (cmd == esc_eeprom_reload_cmd) {
+        uint16_t stat = ecat_eeprom_emulation_reload();
+
+        if (stat == ESC_EEPROM_EMULATION_SUCCESS) {
+            esc_eeprom_emulation_ack(HPM_ESC, cmd, false, false);
+        } else if (stat == ESC_EEPROM_EMULATION_CHECKSUM_ERROR) {
+            esc_eeprom_emulation_ack(HPM_ESC, cmd, false, true);
+        } else {
+            esc_eeprom_emulation_ack(HPM_ESC, cmd, true, false);
+        }
+    }
+}
+
+#endif /* ESC_EEPROM_EMULATION */
 
 /* 板上 I2C EEPROM 模式的初始化：读配置区校验，必要时用 aEepromData 重写 */
 #if !defined(ESC_EEPROM_EMULATION) || (!ESC_EEPROM_EMULATION)

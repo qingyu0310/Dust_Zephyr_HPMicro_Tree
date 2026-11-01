@@ -55,6 +55,11 @@ extern "C" {
 #define ESC_EEPROM_PRODUCT_CODE_WORD_INDEX (0xA)
 #define ESC_EEPROM_REVISION_NUM_WORD_INDEX (0xC)
 
+/* EEPROM 模拟应答返回值 */
+#define ESC_EEPROM_EMULATION_SUCCESS        (0)
+#define ESC_EEPROM_EMULATION_ACK_ERROR      (1)
+#define ESC_EEPROM_EMULATION_CHECKSUM_ERROR (2)
+
 /* 计算 EEPROM 配置区校验值 */
 uint8_t ecat_calculate_eeprom_config_data_checksum(const uint8_t *data, size_t size);
 
@@ -64,6 +69,12 @@ hpm_stat_t ecat_flash_eeprom_read(uint32_t addr, uint8_t *data);
 void ecat_flash_eeprom_format(void);
 void ecat_flash_eeprom_flush(void);
 void ecat_flash_eeprom_show_info(void);
+
+/* Flash 模拟 EEPROM 时，应答 ESC 的 EEPROM 命令 */
+uint16_t ecat_eeprom_emulation_read(uint32_t wordaddr);
+uint16_t ecat_eeprom_emulation_write(uint32_t wordaddr);
+uint16_t ecat_eeprom_emulation_reload(void);
+void     ecat_eeprom_emulation_reload_response(void);
 
 #ifdef __cplusplus
 }

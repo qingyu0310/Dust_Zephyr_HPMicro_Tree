@@ -22,6 +22,12 @@ properties:
     type: int
     default: 0
     description: Address offset programmed into the ESC PHY management block.
+  phy-addresses:
+    type: array
+    description: |
+      MDIO addresses of the PHYs on each ESC port, in port order.
+      Determined by board strapping and not necessarily equal to the port index.
+      Ports without a PHY may be omitted; index 0 corresponds to port 0.
   link0-ctrl-index:
     type: int
     default: 0
