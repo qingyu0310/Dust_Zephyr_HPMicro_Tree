@@ -8,15 +8,16 @@
 #ifndef ECAT_CONFIG_H
 #define ECAT_CONFIG_H
 
-#include "ecat_port_hw.h"
-
 /* SII 介质：1=Flash 分区模拟，0=板载 I2C EEPROM。
- * SSC 原生宏名，ecat_e2p_emulation.c 与 ecat_port_hw.h 共用这一个开关。 */
+ * SSC 原生宏名，ecat_e2p_emulation.c 与 ecat_port_hw.h 共用这一个开关。
+ * 必须先于 ecat_port_hw.h 定义，否则该头按"未定义"裁剪掉 EEPROM 引脚函数。 */
 #if defined(CONFIG_DUST_ECAT_SII_FLASH)
 #define ESC_EEPROM_EMULATION (1)
 #elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 #define ESC_EEPROM_EMULATION (0)
 #endif
+
+#include "ecat_port_hw.h"
 
 #define FLASH_SECTOR_SIZE        (0x1000U) /* 4096 */
 
