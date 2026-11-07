@@ -11,3 +11,12 @@ config HPM_ESC
     help
       HPMicro 片内 ESC 的 Zephyr 设备驱动：寄存器读写、MDIO、中断、PHY 复位、
       EEPROM 模式配置。由 DUST_ECAT_HAL_HPM 或业务门禁 select。
+
+# PDRAM 区按 32 位整字访问（SM2/SM3 过程数据搬运）
+config HPM_ESC_PDRAM_WORD_ACCESS
+    bool "Access ESC PDRAM with 32-bit words"
+    default n
+    depends on HPM_ESC
+    help
+      PDRAM 区（0x1000~0x10000）地址与长度均 4 字节对齐时改用 32 位整字
+      读写，逐字节访问慢约 4 倍。过程数据搬运必须打开。

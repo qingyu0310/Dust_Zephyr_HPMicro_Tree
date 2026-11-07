@@ -79,11 +79,24 @@ index f1e42bd..124c7a6 100644
    vendor: hpmicro
    socs:
      - name: hpm6e80
+diff --git a/modules/hpm_sdk/Kconfig b/modules/hpm_sdk/Kconfig
+index 6291511..814936c 100644
+--- a/modules/hpm_sdk/Kconfig
++++ b/modules/hpm_sdk/Kconfig
+@@ -66,6 +66,8 @@ config HAS_HPMSDK_JPEG
+ 	bool
+ config HAS_HPMSDK_ENET
+ 	bool
++config HAS_HPMSDK_ESC
++	bool
+ config HAS_HPMSDK_SDXC
+ 	bool
+ config HAS_HPMSDK_ADC12
 diff --git a/soc/hpmicro/CMakeLists.txt b/soc/hpmicro/CMakeLists.txt
-index 4704b08..44464d9 100644
+index 4704b08..16214e4 100644
 --- a/soc/hpmicro/CMakeLists.txt
 +++ b/soc/hpmicro/CMakeLists.txt
-@@ -2,7 +2,12 @@
+@@ -2,7 +2,14 @@
  # SPDX-License-Identifier: Apache-2.0
  
  add_subdirectory(common)
@@ -91,6 +104,8 @@ index 4704b08..44464d9 100644
 +if(SOC_SERIES STREQUAL "HPM5300")
 +	# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
 +	add_subdirectory(${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300 ${CMAKE_CURRENT_BINARY_DIR}/HPM5300)
++elseif(SOC_SERIES STREQUAL "HPM5E00")
++	add_subdirectory(${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00 ${CMAKE_CURRENT_BINARY_DIR}/HPM5E00)
 +else()
 +	add_subdirectory(${SOC_SERIES})
 +endif()
@@ -165,7 +180,7 @@ index 554bbca..7299ed7 100644
  
  #ifdef CONFIG_NOCACHE_MEMORY
 diff --git a/soc/hpmicro/Kconfig b/soc/hpmicro/Kconfig
-index 37a4dd5..3c8d052 100644
+index 37a4dd5..2c7a1a0 100644
 --- a/soc/hpmicro/Kconfig
 +++ b/soc/hpmicro/Kconfig
 @@ -9,6 +9,8 @@ config SOC_FAMILY_HPM
@@ -177,8 +192,16 @@ index 37a4dd5..3c8d052 100644
  
  config USE_DT_CODE_PARTITION
  	default y if BOOTLOADER_MCUBOOT
+@@ -59,4 +61,5 @@ config ROM_START_OFFSET
+ 	default 0x200
+ 
+ endif # BOOTLOADER_MCUBOOT
+-endif # SOC_FAMILY_HPM
+\ No newline at end of file
++endif # SOC_FAMILY_HPM
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig"
 diff --git a/soc/hpmicro/Kconfig.defconfig b/soc/hpmicro/Kconfig.defconfig
-index 5fd59fa..097f046 100644
+index 5fd59fa..16442f7 100644
 --- a/soc/hpmicro/Kconfig.defconfig
 +++ b/soc/hpmicro/Kconfig.defconfig
 @@ -8,6 +8,8 @@
@@ -190,11 +213,19 @@ index 5fd59fa..097f046 100644
  
  config SERIAL_INIT_PRIORITY
      default KERNEL_INIT_PRIORITY_DEVICE
+@@ -19,4 +21,5 @@ config PINCTRL
+ config CLOCK_CONTROL
+     default y
+ 
+-endif
+\ No newline at end of file
++endif
++rsource "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig.defconfig.series"
 diff --git a/soc/hpmicro/Kconfig.soc b/soc/hpmicro/Kconfig.soc
-index 0ac112d..f7f2e1c 100644
+index 0ac112d..ac4071b 100644
 --- a/soc/hpmicro/Kconfig.soc
 +++ b/soc/hpmicro/Kconfig.soc
-@@ -7,4 +7,6 @@ config SOC_FAMILY_HPM
+@@ -7,4 +7,7 @@ config SOC_FAMILY_HPM
  config SOC_FAMILY
      default "hpmicro" if SOC_FAMILY_HPM
  
@@ -203,4 +234,15 @@ index 0ac112d..f7f2e1c 100644
 +source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/*/Kconfig.soc"
 +# SELF-MAINTAINED — 用户自研 HPM5300 SoC 支持（sdk_glue_user 小树）
 +source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5300/Kconfig.soc"
-\ No newline at end of file
++source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/../sdk_glue_user/soc/hpmicro/HPM5E00/Kconfig.soc"
+diff --git a/soc/hpmicro/soc.yml b/soc/hpmicro/soc.yml
+index 43729e9..e7a1691 100644
+--- a/soc/hpmicro/soc.yml
++++ b/soc/hpmicro/soc.yml
+@@ -32,3 +32,6 @@ family:
+     - name: hpm6e80
+     - name: hpm6e8y
+ 
++  - name: hpm5e00
++    socs:
++    - name: hpm5e31

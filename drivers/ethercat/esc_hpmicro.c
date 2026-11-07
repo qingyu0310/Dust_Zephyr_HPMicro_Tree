@@ -55,6 +55,10 @@ static uintptr_t esc_base(const struct device *dev)
 }
 
 #if defined(CONFIG_HPM_ESC_PDRAM_WORD_ACCESS)
+/* 诊断探针：最近一次整字搬运的周期数，供上层读取 */
+volatile uint32_t esc_probe_read_cycles;
+volatile uint32_t esc_probe_write_cycles;
+
 /* PDRAM occupies [0x1000, 0x10000). Do not widen register reads, pad across
  * SyncManager boundaries, or touch the first/last byte more than once.
  * memcpy on the CPU side permits unaligned SSC buffers without unaligned MMIO.
@@ -68,6 +72,8 @@ static bool esc_pdram_word_access(uint32_t offset, size_t len)
 
 static void esc_read_words(uintptr_t addr, void *buf, size_t len)
 {
+	uint32_t begin = k_cycle_get_32();
+
 	if (((uintptr_t)buf & 3U) == 0U) {
 		/* Explicit builtin keeps four-byte copies inline even with -fno-builtin.
 		 * memcpy preserves the effective type of byte-array SSC buffers.
@@ -83,10 +89,14 @@ static void esc_read_words(uintptr_t addr, void *buf, size_t len)
 			memcpy((uint8_t *)buf + pos, &word, sizeof(word));
 		}
 	}
+
+	esc_probe_read_cycles = k_cycle_get_32() - begin;
 }
 
 static void esc_write_words(uintptr_t addr, const void *buf, size_t len)
 {
+	uint32_t begin = k_cycle_get_32();
+
 	if (((uintptr_t)buf & 3U) == 0U) {
 		for (size_t pos = 0; pos < len; pos += 4U) {
 			uint32_t word;
@@ -101,6 +111,8 @@ static void esc_write_words(uintptr_t addr, const void *buf, size_t len)
 			*(volatile uint32_t *)(addr + pos) = word;
 		}
 	}
+
+	esc_probe_write_cycles = k_cycle_get_32() - begin;
 }
 #endif
 
