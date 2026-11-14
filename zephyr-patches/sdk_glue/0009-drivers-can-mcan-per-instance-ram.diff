@@ -1,0 +1,38 @@
+--- a/drivers/can/mcan_hpmicro.c
++++ b/drivers/can/mcan_hpmicro.c
+@@ -32,13 +32,11 @@
+ #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
+ 
+ #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+-ATTR_PLACE_AT("AHB_SRAM") uint32_t board_app_mcan_msg_buf[MCAN_MSG_BUF_SIZE_IN_WORDS];
+-static mcan_msg_buf_attr_t s_can_info[] = {
+-    {
+-        .ram_base = (uint32_t) &board_app_mcan_msg_buf,
+-        .ram_size = sizeof(board_app_mcan_msg_buf),
+-    },
+-};
++/* Each controller owns a separate, aligned message RAM slice. */
++ATTR_PLACE_AT("AHB_SRAM") __aligned(MCAN_MSG_BUF_ALIGNMENT_SIZE)
++uint32_t board_app_mcan_msg_buf[MCAN_SOC_MAX_COUNT][MCAN_MSG_BUF_SIZE_IN_WORDS];
++BUILD_ASSERT((MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t)) %
++             MCAN_MSG_BUF_ALIGNMENT_SIZE == 0, "MCAN RAM slice must be aligned");
+ #endif
+ 
+ /* Default baudrate: 1Mbps @80MHz CAN clock */
+@@ -334,7 +332,15 @@
+     }
+ 
+ #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+-    status = mcan_set_msg_buf_attr(can, &s_can_info[0]);
++    const uint32_t instance = mcan_get_instance_from_base(can);
++    if (instance >= ARRAY_SIZE(board_app_mcan_msg_buf)) {
++        return -EINVAL;
++    }
++    const mcan_msg_buf_attr_t msg_buf_attr = {
++        .ram_base = (uint32_t)&board_app_mcan_msg_buf[instance][0],
++        .ram_size = sizeof(board_app_mcan_msg_buf[instance]),
++    };
++    status = mcan_set_msg_buf_attr(can, &msg_buf_attr);
+     if (status != status_success) {
+         LOG_ERR("MCAN set msg buf in AHB RAM failed");
+         return -EAGAIN;

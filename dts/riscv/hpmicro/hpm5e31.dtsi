@@ -120,6 +120,70 @@
 			status = "disabled";
 		};
 
+		uart5: serial@f0054000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf0054000 0x1000>;
+			interrupts = <24 1>;
+			interrupt-names = "uart";
+			interrupt-parent = <&plic>;
+			clocks = <&clk ((283 << 16) | 25) 0 1>;
+			status = "disabled";
+		};
+
+		pwm0: pwm@f0420000 {
+			compatible = "hpmicro,hpm-pwmv2";
+			reg = <0xf0420000 0x4000>;
+			clocks = <&clk ((309 << 16) | (3 << 8)) 0 1>;
+			#pwm-cells = <3>;
+			status = "disabled";
+		};
+
+		mcan0: can@f0300000 {
+			compatible = "hpmicro,hpm-mcan";
+			reg = <0xf0300000 0x4000>;
+			interrupts = <46 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <((298 << 16) | 28)>;
+			clk-source = <0>;
+			clk-divider = <1>;
+			bitrate = <1000000>;
+			status = "disabled";
+		};
+
+		spi2: spi@f0078000 {
+			compatible = "hpmicro,hpm-spi";
+			reg = <0xf0078000 0x4000>;
+			interrupts = <33 1>;
+			interrupt-parent = <&plic>;
+			clocks = <&clk ((276 << 16) | 18) 0 1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		spi3: spi@f007c000 {
+			compatible = "hpmicro,hpm-spi";
+			reg = <0xf007c000 0x4000>;
+			interrupts = <34 1>;
+			interrupt-parent = <&plic>;
+			clocks = <&clk ((277 << 16) | 19) 0 1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		mcan1: can@f0304000 {
+			compatible = "hpmicro,hpm-mcan";
+			reg = <0xf0304000 0x4000>;
+			interrupts = <47 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <((299 << 16) | 29)>;
+			clk-source = <0>;
+			clk-divider = <1>;
+			bitrate = <1000000>;
+			status = "disabled";
+		};
+
 		mcan2: can@f0308000 {
 			compatible = "hpmicro,hpm-mcan";
 			reg = <0xf0308000 0x4000>;

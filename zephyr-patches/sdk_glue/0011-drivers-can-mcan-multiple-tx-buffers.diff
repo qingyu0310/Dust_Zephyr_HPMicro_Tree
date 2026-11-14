@@ -1,0 +1,137 @@
+--- a/drivers/can/mcan_hpmicro.c
++++ b/drivers/can/mcan_hpmicro.c
+@@ -28,8 +28,8 @@
+ #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
+ 
+ static mcan_rx_message_t s_can_rx_buf;
+-/* The send path uses dedicated TX buffer 0 only. */
+-#define HPM_MCAN_NUM_TX_BUF_ELEMENTS (1U)
++/* Default CAN-FD RAM layout provides four dedicated TX buffers. */
++#define HPM_MCAN_NUM_TX_BUF_ELEMENTS (MCAN_TXBUF_SIZE_CANFD_DEFAULT / 2U)
+ #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
+ 
+ #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+@@ -78,6 +78,9 @@
+     struct k_mutex tx_mutex;
+     enum can_state state;
+     struct k_sem tx_sem;
++    /* Protected by irq_lock; synchronous waiters retain their reserved slot. */
++    uint32_t tx_reserved;
++    uint32_t tx_pending;
+     struct k_sem tx_fin_sem[HPM_MCAN_NUM_TX_BUF_ELEMENTS];
+ 
+     /* TX callback */
+@@ -297,7 +300,15 @@
+          * not have its completion cleared by the tail of this ISR. */
+         mcan_clear_interrupt_flags(can, flags & MCAN_EVENT_TRANSMIT);
+         flags &= ~MCAN_EVENT_TRANSMIT;
+-        hpm_mcan_tc_event_handler(dev, 0);
++        struct hpm_mcan_data *data = dev->data;
++        /* TXBTO retains old completions until a new request for that slot.
++         * Only software-pending slots with no hardware request may complete. */
++        const uint32_t completed = can->TXBTO & ~can->TXBRP & data->tx_pending;
++        for (uint32_t index = 0; index < HPM_MCAN_NUM_TX_BUF_ELEMENTS; ++index) {
++            if ((completed & BIT(index)) != 0U) {
++                hpm_mcan_tc_event_handler(dev, index);
++            }
++        }
+     }
+ 
+     /* Error happened */
+@@ -321,6 +332,8 @@
+     k_mutex_init(&data->inst_mutex);
+     k_mutex_init(&data->tx_mutex);
+     k_sem_init(&data->tx_sem, HPM_MCAN_NUM_TX_BUF_ELEMENTS, HPM_MCAN_NUM_TX_BUF_ELEMENTS);
++    data->tx_reserved = 0U;
++    data->tx_pending = 0U;
+ 
+     for (uint32_t i= 0; i < ARRAY_SIZE(data->tx_fin_sem); i++) {
+         k_sem_init(&data->tx_fin_sem[i], 0, 1);
+@@ -372,6 +385,10 @@
+     config->all_filters_config.std_id_filter_list.filter_elem_list = data->std_filters;
+ 
+     mcan_get_default_ram_config(can, &config->ram_config, true);
++    if (config->ram_config.txbuf_dedicated_txbuf_elem_count < HPM_MCAN_NUM_TX_BUF_ELEMENTS) {
++        LOG_ERR("Insufficient dedicated MCAN TX buffers");
++        return -EINVAL;
++    }
+ 
+     uint32_t can_clk_freq = clock_get_frequency(cfg->clock_name);
+     status = mcan_init(can, config, can_clk_freq);
+@@ -563,21 +580,44 @@
+         return -EAGAIN;
+     }
+ 
+-    data->tx_fin_cb[0] = callback;
+-    data->tx_fin_cb_arg[0] = user_data;
+-
+-    status = mcan_transmit_via_txbuf_nonblocking(can, 0, &tx_buf);
+-
++    unsigned int key = irq_lock();
++    uint32_t index;
++    for (index = 0; index < HPM_MCAN_NUM_TX_BUF_ELEMENTS; ++index) {
++        if ((data->tx_reserved & BIT(index)) == 0U) {
++            break;
++        }
++    }
++    if (index == HPM_MCAN_NUM_TX_BUF_ELEMENTS) {
++        irq_unlock(key);
++        k_mutex_unlock(&data->tx_mutex);
++        k_sem_give(&data->tx_sem);
++        return -EAGAIN;
++    }
++
++    data->tx_reserved |= BIT(index);
++    data->tx_pending |= BIT(index);
++    data->tx_fin_cb[index] = callback;
++    data->tx_fin_cb_arg[index] = user_data;
++
++    /* Publish metadata and submit atomically with respect to the completion ISR. */
++    status = mcan_transmit_via_txbuf_nonblocking(can, index, &tx_buf);
++    if (status != status_success) {
++        data->tx_pending &= ~BIT(index);
++        data->tx_reserved &= ~BIT(index);
++    }
++    irq_unlock(key);
+     k_mutex_unlock(&data->tx_mutex);
+-    if (status != 0) {
++    if (status != status_success) {
+         k_sem_give(&data->tx_sem);
+         return -EIO;
+     }
+ 
+     if (callback == NULL) {
+         LOG_DBG("Waiting for TX complete");
+-        k_sem_take(&data->tx_fin_sem[0], K_FOREVER);
+-        /* Keep the slot reserved until the synchronous waiter consumes completion. */
++        k_sem_take(&data->tx_fin_sem[index], K_FOREVER);
++        key = irq_lock();
++        data->tx_reserved &= ~BIT(index);
++        irq_unlock(key);
+         k_sem_give(&data->tx_sem);
+     }
+ 
+@@ -879,12 +919,22 @@
+ static void hpm_mcan_tc_event_handler(const struct device *dev, uint32_t index)
+ {
+     struct hpm_mcan_data *data = dev->data;
++    unsigned int key = irq_lock();
++    if ((data->tx_pending & BIT(index)) == 0U) {
++        irq_unlock(key);
++        return;
++    }
++    data->tx_pending &= ~BIT(index);
+     const can_tx_callback_t tx_cb = data->tx_fin_cb[index];
+     void *const cb_arg = data->tx_fin_cb_arg[index];
++    if (tx_cb != NULL) {
++        data->tx_reserved &= ~BIT(index);
++    }
++    irq_unlock(key);
+     if (tx_cb == NULL) {
++        /* The synchronous caller releases the slot after consuming this signal. */
+         k_sem_give(&data->tx_fin_sem[index]);
+     } else {
+-        /* Snapshot callback metadata before allowing another submission. */
+         k_sem_give(&data->tx_sem);
+         tx_cb(dev, 0, cb_arg);
+     }

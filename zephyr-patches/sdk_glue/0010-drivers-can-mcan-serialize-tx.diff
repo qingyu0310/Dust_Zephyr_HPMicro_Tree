@@ -1,0 +1,77 @@
+--- a/drivers/can/mcan_hpmicro.c
++++ b/drivers/can/mcan_hpmicro.c
+@@ -28,7 +28,8 @@
+ #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
+ 
+ static mcan_rx_message_t s_can_rx_buf;
+-#define HPM_MCAN_NUM_TX_BUF_ELEMENTS (32U)
++/* The send path uses dedicated TX buffer 0 only. */
++#define HPM_MCAN_NUM_TX_BUF_ELEMENTS (1U)
+ #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
+ 
+ #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+@@ -292,6 +293,10 @@
+     }
+     /* Transmit completed */
+     if ((flags & MCAN_EVENT_TRANSMIT) != 0U) {
++        /* Acknowledge before releasing the slot: a newly submitted frame must
++         * not have its completion cleared by the tail of this ISR. */
++        mcan_clear_interrupt_flags(can, flags & MCAN_EVENT_TRANSMIT);
++        flags &= ~MCAN_EVENT_TRANSMIT;
+         hpm_mcan_tc_event_handler(dev, 0);
+     }
+ 
+@@ -318,7 +323,7 @@
+     k_sem_init(&data->tx_sem, HPM_MCAN_NUM_TX_BUF_ELEMENTS, HPM_MCAN_NUM_TX_BUF_ELEMENTS);
+ 
+     for (uint32_t i= 0; i < ARRAY_SIZE(data->tx_fin_sem); i++) {
+-        k_sem_init(&data->tx_fin_sem[i], 1, 1);
++        k_sem_init(&data->tx_fin_sem[i], 0, 1);
+     }
+ 
+     data->filter_rtr = 0;
+@@ -552,7 +557,11 @@
+     memset(&tx_buf, 0, sizeof(tx_buf));
+     convert_can_frame_to_mcan_frame(frame, &tx_buf);
+ 
+-    k_mutex_lock(&data->tx_mutex, timeout);
++    ret = k_mutex_lock(&data->tx_mutex, timeout);
++    if (ret != 0) {
++        k_sem_give(&data->tx_sem);
++        return -EAGAIN;
++    }
+ 
+     data->tx_fin_cb[0] = callback;
+     data->tx_fin_cb_arg[0] = user_data;
+@@ -568,8 +577,9 @@
+     if (callback == NULL) {
+         LOG_DBG("Waiting for TX complete");
+         k_sem_take(&data->tx_fin_sem[0], K_FOREVER);
+-    }
+-
++        /* Keep the slot reserved until the synchronous waiter consumes completion. */
++        k_sem_give(&data->tx_sem);
++    }
+ 
+     return 0;
+ }
+@@ -869,13 +879,14 @@
+ static void hpm_mcan_tc_event_handler(const struct device *dev, uint32_t index)
+ {
+     struct hpm_mcan_data *data = dev->data;
+-    can_tx_callback_t tx_cb;
+-    k_sem_give(&data->tx_sem);
+-    tx_cb = data->tx_fin_cb[index];
+-    if (tx_cb  == NULL) {
++    const can_tx_callback_t tx_cb = data->tx_fin_cb[index];
++    void *const cb_arg = data->tx_fin_cb_arg[index];
++    if (tx_cb == NULL) {
+         k_sem_give(&data->tx_fin_sem[index]);
+     } else {
+-        tx_cb(dev, 0, data->tx_fin_cb_arg[index]);
++        /* Snapshot callback metadata before allowing another submission. */
++        k_sem_give(&data->tx_sem);
++        tx_cb(dev, 0, cb_arg);
+     }
+ }
+ 

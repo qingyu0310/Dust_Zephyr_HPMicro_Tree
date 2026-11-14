@@ -1,0 +1,111 @@
+--- a/drivers/can/mcan_hpmicro.c
++++ b/drivers/can/mcan_hpmicro.c
+@@ -27,7 +27,6 @@
+ #define HPM_MCAN_BITRATE_MAX (1000000UL) /* 1Mbps */
+ #define HPM_MCAN_FD_BITRATE_MAX (8000000UL) /* 8Mbps */
+ 
+-static mcan_rx_message_t s_can_rx_buf;
+ /* Default CAN-FD RAM layout provides four dedicated TX buffers. */
+ #define HPM_MCAN_NUM_TX_BUF_ELEMENTS (MCAN_TXBUF_SIZE_CANFD_DEFAULT / 2U)
+ #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
+@@ -148,8 +147,11 @@
+     can_rx_callback_t cb;
+     struct can_frame frame;
+     void *cb_arg;
++    mcan_rx_message_t s_can_rx_buf;
+     memset(&s_can_rx_buf, 0, sizeof(s_can_rx_buf));
+-    mcan_read_rxbuf(can, buf_index, (mcan_rx_message_t *) &s_can_rx_buf);
++    if (mcan_read_rxbuf(can, buf_index, &s_can_rx_buf) != status_success) {
++        return;
++    }
+ 
+     uint32_t filter_index = hpm_mcan_get_first_filter_index(&s_can_rx_buf, data);
+     memset(&frame, 0, sizeof(frame));
+@@ -174,6 +176,9 @@
+     frame.dlc = s_can_rx_buf.dlc;
+     LOG_DBG("Frame on filter %d, ID: 0x%x", filter_index, frame.id);
+     size_t data_len = can_dlc_to_bytes(frame.dlc);
++    if (data_len > sizeof(frame.data)) {
++        return;
++    }
+     for (uint32_t i = 0; i < data_len; i++) {
+         frame.data[i] = s_can_rx_buf.data_8[i];
+     }
+@@ -205,7 +210,7 @@
+ }
+ 
+ /* Get MCAN message from RX BUF */
+-static void hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t fifo_index)
++static bool hpm_mcan_get_message_from_rxfifo(const struct device *dev, uint32_t fifo_index)
+ {
+     const struct hpm_mcan_config *cfg = dev->config;
+     MCAN_Type *can = cfg->base;
+@@ -213,8 +218,11 @@
+     can_rx_callback_t cb;
+     struct can_frame frame;
+     void *cb_arg;
++    mcan_rx_message_t s_can_rx_buf;
+     memset(&s_can_rx_buf, 0, sizeof(s_can_rx_buf));
+-    mcan_read_rxfifo(can, fifo_index, (mcan_rx_message_t *) &s_can_rx_buf);
++    if (mcan_read_rxfifo(can, fifo_index, &s_can_rx_buf) != status_success) {
++        return false;
++    }
+ 
+     uint32_t filter_index = hpm_mcan_get_first_filter_index(&s_can_rx_buf, data);
+     memset(&frame, 0, sizeof(frame));
+@@ -239,6 +247,9 @@
+     frame.dlc = s_can_rx_buf.dlc;
+     LOG_DBG("Frame on filter %d, ID: 0x%x", filter_index, frame.id);
+     size_t data_len = can_dlc_to_bytes(frame.dlc);
++    if (data_len > sizeof(frame.data)) {
++        return true;
++    }
+     for (uint32_t i = 0; i < data_len; i++) {
+         frame.data[i] = s_can_rx_buf.data_8[i];
+     }
+@@ -250,7 +261,7 @@
+         bool rtr_filter = (data->filter_rtr & BIT(filter_index)) != 0;
+         bool rtr_in_frame = (frame.flags & CAN_FRAME_RTR);
+         if ((rtr_filter_mask != rtr_in_frame) || (rtr_filter != rtr_in_frame)) {
+-            return;
++            return true;
+         }
+ 
+         if (s_can_rx_buf.use_ext_id) {
+@@ -267,6 +278,7 @@
+             LOG_DBG("cb missing");
+         }
+     }
++    return true;
+ }
+ 
+ __attribute__((section(".isr")))static void hpm_mcan_isr(const struct device *dev)
+@@ -274,13 +286,21 @@
+     const struct hpm_mcan_config *cfg = dev->config;
+     MCAN_Type *can = cfg->base;
+     uint32_t flags = mcan_get_interrupt_flags(can);
+-    /* New message is available in RXFIFO0 */
+-    if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) != 0) {
+-        hpm_mcan_get_message_from_rxfifo(dev, 0);
+-    }
+-    /* New message is available in RXFIFO1 */
+-    if ((flags & MCAN_INT_RXFIFO1_NEW_MSG) != 0U) {
+-        hpm_mcan_get_message_from_rxfifo(dev, 1);
++    /* Acknowledge NEW_MSG before draining. Clearing it after a callback can
++     * erase a notification for another frame that arrived during the callback.
++     * Service actual fill levels even if NEW_MSG was lost in an earlier ISR. */
++    const uint32_t rx_new_flags = MCAN_INT_RXFIFO0_NEW_MSG | MCAN_INT_RXFIFO1_NEW_MSG;
++    mcan_clear_interrupt_flags(can, flags & rx_new_flags);
++    flags &= ~rx_new_flags;
++    while (MCAN_RXF0S_F0FL_GET(can->RXF0S) != 0U) {
++        if (!hpm_mcan_get_message_from_rxfifo(dev, 0)) {
++            break;
++        }
++    }
++    while (MCAN_RXF1S_F1FL_GET(can->RXF1S) != 0U) {
++        if (!hpm_mcan_get_message_from_rxfifo(dev, 1)) {
++            break;
++        }
+     }
+     /* New message is available in RXBUF */
+     if ((flags & MCAN_INT_MSG_STORE_TO_RXBUF) != 0U) {
